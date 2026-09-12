@@ -1,0 +1,4 @@
+.sst
+node_modules
+.env
+.credentials.local
