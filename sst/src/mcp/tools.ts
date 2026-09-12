@@ -74,7 +74,7 @@ export const tools: Tool[] = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Send an email from one of the connected accounts over SMTP. Confirm recipient and content with the user before calling.",
+      "Send an email from one of the connected accounts over SMTP, optionally with attachments. Confirm recipient, content and any attachments with the user before calling — sent mail cannot be recalled.",
     inputSchema: {
       type: "object",
       properties: {
@@ -87,10 +87,33 @@ export const tools: Tool[] = [
         bcc: { type: "string" },
         replyTo: { type: "string" },
         inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
+        attachments: {
+          type: "array",
+          description:
+            "Files to attach. Give each entry EITHER base64 `content` (for a file you are creating) OR `fromUid` (to forward a file that is already in a mailbox — the bytes are copied server-side, so you never need to read them first).",
+          items: {
+            type: "object",
+            properties: {
+              filename: { type: "string", description: "Name the recipient sees. Required with `content`." },
+              contentType: { type: "string", description: 'MIME type, e.g. "application/pdf". Guessed if omitted.' },
+              content: { type: "string", description: "Base64-encoded file contents." },
+              fromUid: { type: "number", description: "Copy an attachment from this message uid instead." },
+              fromFolder: { type: "string", description: "Folder that uid is in, default INBOX." },
+              fromFilename: { type: "string", description: "Which attachment on that message, by filename." },
+              fromIndex: { type: "number", description: "Which attachment on that message, by index. Default 0." },
+            },
+          },
+        },
       },
       required: ["account", "to", "subject"],
     },
-    handler: async (a) => mail.sendMessage(await resolveAccount(a.account), a),
+    handler: async (a) => {
+      // Reject malformed attachment specs before touching the network.
+      validateAttachmentSpecs(a.attachments ?? []);
+      const acct = await resolveAccount(a.account);
+      const attachments = await resolveAttachments(acct, a.attachments ?? []);
+      return mail.sendMessage(acct, { ...a, attachments });
+    },
   },
   {
     name: "get_attachment",
@@ -220,5 +243,65 @@ export const tools: Tool[] = [
     handler: async (a) => mail.moveMessage(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, a.target),
   },
 ];
+
+/** Shape check only — no account or network access needed. */
+export function validateAttachmentSpecs(specs: any[]): void {
+  if (!Array.isArray(specs)) throw new Error("`attachments` must be an array.");
+  specs.forEach((spec, i) => {
+    const label = spec?.filename ?? `#${i}`;
+    if (spec?.fromUid !== undefined) {
+      if (typeof spec.fromUid !== "number") throw new Error(`Attachment ${label}: fromUid must be a number.`);
+      return;
+    }
+    if (typeof spec?.content !== "string") {
+      throw new Error(`Attachment ${label} needs either base64 \`content\` or \`fromUid\`.`);
+    }
+    if (!spec.filename) throw new Error(`Attachment #${i} has base64 content but no filename.`);
+  });
+}
+
+/**
+ * Turn the tool's attachment specs into real buffers: base64 payloads are decoded,
+ * `fromUid` entries are pulled off the IMAP server so the bytes never pass through
+ * the model.
+ */
+async function resolveAttachments(
+  acct: Awaited<ReturnType<typeof resolveAccount>>,
+  specs: any[],
+): Promise<mail.Attachment[]> {
+  const out: mail.Attachment[] = [];
+  for (const spec of specs) {
+    if (spec.fromUid !== undefined) {
+      const att = await mail.getAttachment(
+        acct,
+        spec.fromFolder ?? "INBOX",
+        spec.fromUid,
+        { filename: spec.fromFilename, index: spec.fromIndex },
+        mail.MAX_TOTAL_ATTACHMENT_BYTES,
+      );
+      out.push({
+        filename: spec.filename ?? att.filename,
+        contentType: spec.contentType ?? att.contentType,
+        content: att.content,
+      });
+      continue;
+    }
+    out.push({
+      filename: spec.filename,
+      contentType: spec.contentType,
+      content: Buffer.from(spec.content, "base64"),
+    });
+  }
+
+  const total = out.reduce((sum, a) => sum + a.content.length, 0);
+  if (total > mail.MAX_TOTAL_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Attachments total ${(total / 1024 / 1024).toFixed(1)} MB, over the ${
+        mail.MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024
+      } MB limit for one message.`,
+    );
+  }
+  return out;
+}
 
 export const toolMap = new Map(tools.map((t) => [t.name, t]));

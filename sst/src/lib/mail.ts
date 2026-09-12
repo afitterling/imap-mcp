@@ -134,6 +134,7 @@ export async function getAttachment(
   folder: string,
   uid: number,
   selector: { filename?: string; index?: number },
+  maxBytes: number = MAX_ATTACHMENT_BYTES,
 ) {
   return withImap(a, async (c) => {
     const lock = await c.getMailboxLock(folder);
@@ -152,11 +153,13 @@ export async function getAttachment(
         const names = all.map((x, i) => `[${i}] ${x.filename ?? "(unnamed)"}`).join(", ");
         throw new Error(`No attachment matched. This message has: ${names}`);
       }
-      if (wanted.size > MAX_ATTACHMENT_BYTES) {
+      if (wanted.size > maxBytes) {
         throw new Error(
-          `Attachment "${wanted.filename}" is ${(wanted.size / 1024 / 1024).toFixed(1)} MB, over the ${
-            MAX_ATTACHMENT_BYTES / 1024 / 1024
-          } MB transfer limit.`,
+          `Attachment "${wanted.filename}" is ${(wanted.size / 1024 / 1024).toFixed(1)} MB, over the ${(
+            maxBytes /
+            1024 /
+            1024
+          ).toFixed(0)} MB limit.`,
         );
       }
       return {
@@ -237,6 +240,8 @@ export async function moveMessage(a: Account, folder: string, uid: number, targe
   });
 }
 
+export type Attachment = { filename: string; contentType?: string; content: Buffer };
+
 export type SendArgs = {
   to: string;
   subject: string;
@@ -246,7 +251,11 @@ export type SendArgs = {
   bcc?: string;
   replyTo?: string;
   inReplyTo?: string;
+  attachments?: Attachment[];
 };
+
+/** Most providers reject messages over ~25 MB; stay well under after base64 encoding. */
+export const MAX_TOTAL_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 
 export async function sendMessage(a: Account, args: SendArgs) {
   const transport = nodemailer.createTransport({
@@ -266,9 +275,19 @@ export async function sendMessage(a: Account, args: SendArgs) {
     subject: args.subject,
     text: args.text,
     html: args.html,
+    attachments: args.attachments?.map((att) => ({
+      filename: att.filename,
+      contentType: att.contentType,
+      content: att.content,
+    })),
   });
   transport.close();
-  return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
+  return {
+    messageId: info.messageId,
+    accepted: info.accepted,
+    rejected: info.rejected,
+    attachments: args.attachments?.map((a) => ({ filename: a.filename, size: a.content.length })),
+  };
 }
 
 export async function createFolder(a: Account, path: string) {
