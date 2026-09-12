@@ -17,6 +17,24 @@ const account = {
   description: "Mail account to act on — its label, email address, or id. Use list_accounts first.",
 };
 
+const attachmentsSchema = {
+  type: "array",
+  description:
+    "Files to attach. Give each entry EITHER base64 `content` (for a file you are creating) OR `fromUid` (to reuse a file already in a mailbox — the bytes are copied server-side, so you never need to read them first).",
+  items: {
+    type: "object",
+    properties: {
+      filename: { type: "string", description: "Name the recipient sees. Required with `content`." },
+      contentType: { type: "string", description: 'MIME type, e.g. "application/pdf". Guessed if omitted.' },
+      content: { type: "string", description: "Base64-encoded file contents." },
+      fromUid: { type: "number", description: "Copy an attachment from this message uid instead." },
+      fromFolder: { type: "string", description: "Folder that uid is in, default INBOX." },
+      fromFilename: { type: "string", description: "Which attachment on that message, by filename." },
+      fromIndex: { type: "number", description: "Which attachment on that message, by index. Default 0." },
+    },
+  },
+};
+
 export const tools: Tool[] = [
   {
     name: "list_accounts",
@@ -87,23 +105,7 @@ export const tools: Tool[] = [
         bcc: { type: "string" },
         replyTo: { type: "string" },
         inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
-        attachments: {
-          type: "array",
-          description:
-            "Files to attach. Give each entry EITHER base64 `content` (for a file you are creating) OR `fromUid` (to forward a file that is already in a mailbox — the bytes are copied server-side, so you never need to read them first).",
-          items: {
-            type: "object",
-            properties: {
-              filename: { type: "string", description: "Name the recipient sees. Required with `content`." },
-              contentType: { type: "string", description: 'MIME type, e.g. "application/pdf". Guessed if omitted.' },
-              content: { type: "string", description: "Base64-encoded file contents." },
-              fromUid: { type: "number", description: "Copy an attachment from this message uid instead." },
-              fromFolder: { type: "string", description: "Folder that uid is in, default INBOX." },
-              fromFilename: { type: "string", description: "Which attachment on that message, by filename." },
-              fromIndex: { type: "number", description: "Which attachment on that message, by index. Default 0." },
-            },
-          },
-        },
+        attachments: attachmentsSchema,
       },
       required: ["account", "to", "subject"],
     },
@@ -113,6 +115,35 @@ export const tools: Tool[] = [
       const acct = await resolveAccount(a.account);
       const attachments = await resolveAttachments(acct, a.attachments ?? []);
       return mail.sendMessage(acct, { ...a, attachments });
+    },
+  },
+  {
+    name: "create_draft",
+    title: "Save a draft",
+    description:
+      "Write a message into the account's Drafts folder WITHOUT sending it. The user opens it in their own mail client to review, edit and send. Prefer this over send_message whenever the user wants to look the message over first, or when you are unsure about recipients or wording.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        to: { type: "string", description: "Recipient address(es), comma separated. May be left empty on a draft." },
+        subject: { type: "string" },
+        text: { type: "string", description: "Plain-text body." },
+        html: { type: "string", description: "Optional HTML body." },
+        cc: { type: "string" },
+        bcc: { type: "string" },
+        replyTo: { type: "string" },
+        inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
+        attachments: attachmentsSchema,
+        folder: { type: "string", description: "Override the drafts folder if auto-detection picks the wrong one." },
+      },
+      required: ["account"],
+    },
+    handler: async (a) => {
+      validateAttachmentSpecs(a.attachments ?? []);
+      const acct = await resolveAccount(a.account);
+      const attachments = await resolveAttachments(acct, a.attachments ?? []);
+      return mail.createDraft(acct, { ...a, attachments });
     },
   },
   {

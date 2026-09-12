@@ -1,5 +1,6 @@
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { simpleParser } from "mailparser";
 import type { Account } from "./store.js";
 import { imapPassword, smtpPassword } from "./store.js";
@@ -288,6 +289,63 @@ export async function sendMessage(a: Account, args: SendArgs) {
     rejected: info.rejected,
     attachments: args.attachments?.map((a) => ({ filename: a.filename, size: a.content.length })),
   };
+}
+
+const DRAFT_NAMES = ["drafts", "draft", "entwürfe", "entwuerfe", "inbox.drafts", "[gmail]/drafts"];
+
+/** Locate the Drafts folder the same way archiving locates the archive. */
+async function findDraftsFolder(c: ImapFlow): Promise<string> {
+  const folders = await c.list();
+  const special = folders.find((f) => f.specialUse === "\\Drafts");
+  if (special) return special.path;
+  const named = folders.find((f) => DRAFT_NAMES.includes(f.path.toLowerCase()));
+  if (named) return named.path;
+  throw new Error(
+    `No drafts folder found. Pass "folder" explicitly — available: ${folders.map((f) => f.path).join(", ")}`,
+  );
+}
+
+/**
+ * Save a message to the Drafts folder over IMAP APPEND. Nothing is sent: the user
+ * opens it in their own mail client, edits and sends it there.
+ */
+export async function createDraft(a: Account, args: SendArgs & { folder?: string }) {
+  const raw = await new MailComposer({
+    from: `${a.label} <${a.email}>`,
+    to: args.to,
+    cc: args.cc,
+    bcc: args.bcc,
+    replyTo: args.replyTo,
+    inReplyTo: args.inReplyTo,
+    references: args.inReplyTo,
+    subject: args.subject,
+    text: args.text,
+    html: args.html,
+    attachments: args.attachments?.map((att) => ({
+      filename: att.filename,
+      contentType: att.contentType,
+      content: att.content,
+    })),
+  })
+    .compile()
+    .build();
+
+  return withImap(a, async (c) => {
+    const folder = args.folder ?? (await findDraftsFolder(c));
+    // \Draft marks it editable; \Seen stops it showing up as unread mail.
+    // append() resolves to false on servers that refuse the APPEND outright.
+    const res = await c.append(folder, raw, ["\\Draft", "\\Seen"], new Date());
+    if (res === false) throw new Error(`The server refused to save a draft in "${folder}".`);
+    return {
+      folder,
+      uid: res.uid,
+      subject: args.subject,
+      to: args.to,
+      size: raw.length,
+      attachments: args.attachments?.map((x) => ({ filename: x.filename, size: x.content.length })),
+      note: "Saved as a draft. Nothing has been sent.",
+    };
+  });
 }
 
 export async function createFolder(a: Account, path: string) {

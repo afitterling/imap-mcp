@@ -39,6 +39,7 @@ Accounts can be referenced by label, email or id — `"work"` is enough.
 | `search_messages` | Search subject/body, filter by sender, unread, date |
 | `get_message` | Full body, headers, indexed attachment list |
 | `get_attachment` | Download one attachment (images viewable, rest as a file resource, 4 MB cap) |
+| `create_draft` | Save a message to Drafts over IMAP APPEND — nothing is sent |
 | `send_message` | Send over SMTP, with CC/BCC, threading and attachments (base64, or forwarded server-side from another message) |
 | `archive_message` | Move messages to the archive folder, auto-detected |
 | `move_message` | Move a message to any folder |
@@ -66,6 +67,13 @@ Claude desktop / claude.ai: Settings → Connectors → Add custom connector, pa
 URL, and click Connect. The server implements OAuth 2.1, so Claude registers itself
 (RFC 7591), sends you to a consent screen, and you approve with the admin password —
 no token handling. Access tokens last 30 days and refresh silently.
+
+## Tool-list caching
+
+Clients fetch `tools/list` once at connect and cache it; this server is stateless, so it
+cannot push `notifications/tools/list_changed`. After deploying a new tool, an
+already-connected client keeps the old list until it reconnects — toggle the connector
+off and on, or start a new conversation.
 
 ## Auth
 
