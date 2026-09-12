@@ -33,7 +33,7 @@ export default $config({
       handler: "src/handler.handler",
       url: true,
       timeout: "60 seconds",
-      memory: "512 MB",
+      memory: "1024 MB", // headroom for parsing messages with attachments
       nodejs: { install: ["imapflow", "mailparser", "nodemailer"] },
       link: [accounts, oauth, encryptionKey, adminPassword, mcpToken],
     });

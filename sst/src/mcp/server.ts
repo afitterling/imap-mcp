@@ -45,6 +45,10 @@ async function dispatch(req: Req): Promise<Res | null> {
       }
       try {
         const result = await tool.handler(req.params?.arguments ?? {});
+        // Tools returning binary or viewable content emit their own MCP blocks.
+        if (result && typeof result === "object" && "__mcpContent" in result) {
+          return ok({ content: (result as { __mcpContent: unknown[] }).__mcpContent, isError: false });
+        }
         return ok({
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           structuredContent: { result },

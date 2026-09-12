@@ -9,6 +9,9 @@ type Tool = {
   handler: (args: any) => Promise<unknown>;
 };
 
+/** A handler may return this to emit MCP content blocks directly instead of JSON. */
+export type RawContent = { __mcpContent: unknown[] };
+
 const account = {
   type: "string",
   description: "Mail account to act on — its label, email address, or id. Use list_accounts first.",
@@ -90,6 +93,81 @@ export const tools: Tool[] = [
     handler: async (a) => mail.sendMessage(await resolveAccount(a.account), a),
   },
   {
+    name: "get_attachment",
+    title: "Download an attachment",
+    description:
+      "Download one attachment from a message and return its contents. Images come back viewable; everything else as an embedded file resource. Call get_message first to see the attachment list with its indexes. Limit 4 MB per file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        folder: { type: "string", description: "Folder the message is in, default INBOX." },
+        uid: { type: "number", description: "Message uid from search_messages." },
+        filename: { type: "string", description: "Attachment filename. Takes precedence over index." },
+        index: { type: "number", description: "Zero-based attachment index from get_message. Default 0." },
+      },
+      required: ["account", "uid"],
+    },
+    handler: async (a): Promise<RawContent> => {
+      const att = await mail.getAttachment(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, {
+        filename: a.filename,
+        index: a.index,
+      });
+      const base64 = att.content.toString("base64");
+      const summary = {
+        type: "text",
+        text: `Attachment "${att.filename}" (${att.contentType}, ${att.size} bytes) from uid ${a.uid}.`,
+      };
+      if (att.contentType.startsWith("image/")) {
+        return { __mcpContent: [summary, { type: "image", data: base64, mimeType: att.contentType }] };
+      }
+      const uri = `mail://${encodeURIComponent(a.account)}/${encodeURIComponent(a.folder ?? "INBOX")}/${a.uid}/${encodeURIComponent(att.filename)}`;
+      // Text parts are more useful inline; everything else travels as a base64 blob.
+      const resource = att.contentType.startsWith("text/")
+        ? { uri, mimeType: att.contentType, text: att.content.toString("utf8") }
+        : { uri, mimeType: att.contentType, blob: base64 };
+      return { __mcpContent: [summary, { type: "resource", resource }] };
+    },
+  },
+  {
+    name: "create_folder",
+    title: "Create a folder",
+    description:
+      "Create a new IMAP folder. Use the server's hierarchy separator for nesting, e.g. \"Projects/Acme\" or \"INBOX.Projects\" — call list_folders first to see which style the account uses.",
+    inputSchema: {
+      type: "object",
+      properties: { account, path: { type: "string", description: "Full path of the folder to create." } },
+      required: ["account", "path"],
+    },
+    handler: async (a) => mail.createFolder(await resolveAccount(a.account), a.path),
+  },
+  {
+    name: "delete_folder",
+    title: "Delete a folder",
+    description:
+      "Permanently delete a folder AND every message in it. This cannot be undone — always show the user the folder name and message count and get explicit confirmation before calling with confirm=true. INBOX and special folders (Sent, Trash, Drafts, Junk, Archive) are protected and cannot be deleted.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        path: { type: "string", description: "Full path of the folder to delete." },
+        confirm: {
+          type: "boolean",
+          description: "Must be true. Set it only after the user has explicitly confirmed this deletion.",
+        },
+      },
+      required: ["account", "path", "confirm"],
+    },
+    handler: async (a) => {
+      if (a.confirm !== true) {
+        throw new Error(
+          "Refused: deleting a folder destroys every message in it. Ask the user to confirm, then call again with confirm=true.",
+        );
+      }
+      return mail.deleteFolder(await resolveAccount(a.account), a.path);
+    },
+  },
+  {
     name: "flag_message",
     title: "Flag or mark a message",
     description: "Add or remove IMAP flags on a message, e.g. mark read (\\\\Seen), star (\\\\Flagged) or delete (\\\\Deleted).",
@@ -106,6 +184,24 @@ export const tools: Tool[] = [
     },
     handler: async (a) =>
       mail.setFlags(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, a.add ?? [], a.remove ?? []),
+  },
+  {
+    name: "archive_message",
+    title: "Archive messages",
+    description:
+      "Archive one or more messages — moves them out of the inbox into the account's archive folder, which is detected automatically (\\Archive special-use, or a folder named Archive / All Mail). Use this rather than deleting when the user wants mail out of the way but kept.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        folder: { type: "string", description: "Folder the messages are in now, default INBOX." },
+        uids: { type: "array", items: { type: "number" }, description: "One or more message uids from search_messages." },
+        target: { type: "string", description: "Override the archive folder path, if auto-detection picks the wrong one." },
+      },
+      required: ["account", "uids"],
+    },
+    handler: async (a) =>
+      mail.archiveMessages(await resolveAccount(a.account), a.folder ?? "INBOX", a.uids, a.target),
   },
   {
     name: "move_message",

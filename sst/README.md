@@ -30,8 +30,21 @@ Browser ──session cookie──> /admin ┘        └──> IMAP / SMTP of 
 
 ## Tools exposed to Claude
 
-`list_accounts`, `list_folders`, `search_messages`, `get_message`, `send_message`,
-`flag_message`, `move_message`. Accounts can be referenced by label, email or id.
+Accounts can be referenced by label, email or id — `"work"` is enough.
+
+| Tool | Does |
+|---|---|
+| `list_accounts` | List connected accounts |
+| `list_folders` | List IMAP folders, with special-use flags |
+| `search_messages` | Search subject/body, filter by sender, unread, date |
+| `get_message` | Full body, headers, indexed attachment list |
+| `get_attachment` | Download one attachment (images viewable, rest as a file resource, 4 MB cap) |
+| `send_message` | Send over SMTP, with CC/BCC and threading |
+| `archive_message` | Move messages to the archive folder, auto-detected |
+| `move_message` | Move a message to any folder |
+| `flag_message` | Add/remove IMAP flags (`\Seen`, `\Flagged`, `\Deleted`) |
+| `create_folder` | Create a folder |
+| `delete_folder` | Delete a folder and its messages — requires `confirm=true`; INBOX and special-use folders are protected |
 
 ## Adding a mail account
 

@@ -4,6 +4,13 @@ import { simpleParser } from "mailparser";
 import type { Account } from "./store.js";
 import { imapPassword, smtpPassword } from "./store.js";
 
+/** Envelope dates arrive as a Date on most servers and as a raw string on some. */
+function toIso(value: string | Date | undefined): string | undefined {
+  if (!value) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 function client(a: Account): ImapFlow {
   return new ImapFlow({
     host: a.imap.host,
@@ -73,7 +80,7 @@ export async function searchMessages(a: Account, args: SearchArgs) {
           subject: msg.envelope?.subject ?? "(no subject)",
           from: msg.envelope?.from?.map((x) => `${x.name ?? ""} <${x.address}>`.trim()).join(", "),
           to: msg.envelope?.to?.map((x) => x.address).join(", "),
-          date: msg.envelope?.date?.toISOString(),
+          date: toIso(msg.envelope?.date),
           seen: msg.flags?.has("\\Seen") ?? false,
           flagged: msg.flags?.has("\\Flagged") ?? false,
           size: msg.size,
@@ -106,11 +113,57 @@ export async function getMessage(a: Account, folder: string, uid: number, markSe
         text: parsed.text,
         // Trim runaway HTML mail; the text part is what a model actually needs.
         html: typeof parsed.html === "string" ? parsed.html.slice(0, 20_000) : undefined,
-        attachments: parsed.attachments?.map((att) => ({
+        attachments: parsed.attachments?.map((att, index) => ({
+          index,
           filename: att.filename,
           contentType: att.contentType,
           size: att.size,
         })),
+      };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** Lambda can return ~6 MB; base64 inflates by a third, so cap the raw payload below that. */
+export const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+
+export async function getAttachment(
+  a: Account,
+  folder: string,
+  uid: number,
+  selector: { filename?: string; index?: number },
+) {
+  return withImap(a, async (c) => {
+    const lock = await c.getMailboxLock(folder);
+    try {
+      const downloaded = await c.download(String(uid), undefined, { uid: true });
+      if (!downloaded) throw new Error(`Message uid ${uid} not found in ${folder}`);
+      const parsed = await simpleParser(downloaded.content);
+      const all = parsed.attachments ?? [];
+      if (!all.length) throw new Error(`Message uid ${uid} has no attachments.`);
+
+      const wanted =
+        selector.filename !== undefined
+          ? all.find((x) => x.filename?.toLowerCase() === selector.filename!.toLowerCase())
+          : all[selector.index ?? 0];
+      if (!wanted) {
+        const names = all.map((x, i) => `[${i}] ${x.filename ?? "(unnamed)"}`).join(", ");
+        throw new Error(`No attachment matched. This message has: ${names}`);
+      }
+      if (wanted.size > MAX_ATTACHMENT_BYTES) {
+        throw new Error(
+          `Attachment "${wanted.filename}" is ${(wanted.size / 1024 / 1024).toFixed(1)} MB, over the ${
+            MAX_ATTACHMENT_BYTES / 1024 / 1024
+          } MB transfer limit.`,
+        );
+      }
+      return {
+        filename: wanted.filename ?? "attachment",
+        contentType: wanted.contentType ?? "application/octet-stream",
+        size: wanted.size,
+        content: wanted.content as Buffer,
       };
     } finally {
       lock.release();
@@ -131,6 +184,41 @@ export async function setFlags(
       if (add.length) await c.messageFlagsAdd(String(uid), add, { uid: true });
       if (remove.length) await c.messageFlagsRemove(String(uid), remove, { uid: true });
       return { uid, folder, added: add, removed: remove };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/**
+ * Locate the account's archive folder. IMAP servers disagree wildly: most advertise
+ * the \\Archive special-use flag, Gmail exposes "[Gmail]/All Mail" instead, and some
+ * only have a plainly named folder.
+ */
+const ARCHIVE_NAMES = ["archive", "archiv", "archives", "[gmail]/all mail", "inbox.archive", "all mail"];
+
+export async function findArchiveFolder(c: ImapFlow): Promise<string> {
+  const folders = await c.list();
+  const special = folders.find((f) => f.specialUse === "\\Archive");
+  if (special) return special.path;
+  const named = folders.find((f) => ARCHIVE_NAMES.includes(f.path.toLowerCase()));
+  if (named) return named.path;
+  throw new Error(
+    `No archive folder found. Pass "target" explicitly — available folders: ${folders.map((f) => f.path).join(", ")}`,
+  );
+}
+
+/** Archive one or more messages, resolving the archive folder automatically. */
+export async function archiveMessages(a: Account, folder: string, uids: number[], target?: string) {
+  return withImap(a, async (c) => {
+    const destination = target ?? (await findArchiveFolder(c));
+    if (destination === folder) {
+      return { archived: [], folder, target: destination, note: "Messages are already in the archive folder." };
+    }
+    const lock = await c.getMailboxLock(folder);
+    try {
+      await c.messageMove(uids, destination, { uid: true });
+      return { archived: uids, from: folder, target: destination };
     } finally {
       lock.release();
     }
@@ -181,6 +269,38 @@ export async function sendMessage(a: Account, args: SendArgs) {
   });
   transport.close();
   return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
+}
+
+export async function createFolder(a: Account, path: string) {
+  return withImap(a, async (c) => {
+    const res = await c.mailboxCreate(path);
+    return { path: res.path, created: res.created };
+  });
+}
+
+/** Folders that must never be deleted, whatever the caller asks for. */
+const PROTECTED_USE = ["\\Inbox", "\\Sent", "\\Trash", "\\Drafts", "\\Junk", "\\Archive"];
+
+export async function deleteFolder(a: Account, path: string) {
+  return withImap(a, async (c) => {
+    if (path.toUpperCase() === "INBOX") throw new Error("The INBOX cannot be deleted.");
+    const folders = await c.list();
+    const folder = folders.find((f) => f.path === path);
+    if (!folder) {
+      throw new Error(`No folder "${path}". Available: ${folders.map((f) => f.path).join(", ")}`);
+    }
+    if (folder.specialUse && PROTECTED_USE.includes(folder.specialUse)) {
+      throw new Error(
+        `"${path}" is the account's ${folder.specialUse} folder and is protected from deletion.`,
+      );
+    }
+    // Report what is about to be destroyed — deleting a mailbox takes its messages with it.
+    const box = await c.mailboxOpen(path, { readOnly: true });
+    const messageCount = box.exists;
+    await c.mailboxClose();
+    await c.mailboxDelete(path);
+    return { path, deleted: true, messagesDeleted: messageCount };
+  });
 }
 
 /** Used by the admin UI's "Test connection" button. */

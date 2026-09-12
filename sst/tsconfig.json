@@ -8,5 +8,5 @@
     "esModuleInterop": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "sst.config.ts", ".sst/platform/config.d.ts"]
+  "include": ["src/**/*.ts", "sst.config.ts", "sst-env.d.ts", ".sst/platform/config.d.ts"]
 }
