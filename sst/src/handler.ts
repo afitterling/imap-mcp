@@ -19,6 +19,7 @@ import {
   authorizationServerMetadata,
 } from "./lib/oauth.js";
 import { authorizePage } from "./web/authorize.js";
+import { sendSecurityAlert, requestContext } from "./lib/notify.js";
 import { loginPage } from "./web/login.js";
 import { appPage } from "./web/app.js";
 
@@ -130,8 +131,25 @@ app.post("/oauth/authorize", async (c) => {
   const params = Object.fromEntries(AUTH_FIELDS.filter((k) => form[k]).map((k) => [k, form[k]]));
 
   if (!safeEqual(String(form.password ?? ""), Resource.AdminPassword.value)) {
+    await sendSecurityAlert({
+      title: "Failed connector authorization",
+      outcome: "failure",
+      details: { ...requestContext(c), Where: "OAuth consent screen", Client: client.name },
+    });
     return c.html(authorizePage({ clientName: client.name, params, error: "That password is not correct." }), 401);
   }
+
+  await sendSecurityAlert({
+    title: `New connector authorized: ${client.name}`,
+    outcome: "success",
+    details: {
+      ...requestContext(c),
+      Where: "OAuth consent screen",
+      Client: client.name,
+      "Redirect URI": form.redirect_uri,
+      Access: "Full read, send, move and delete on every configured mailbox",
+    },
+  });
 
   const code = await issueCode(client.clientId, form.redirect_uri, form.code_challenge);
   const target = new URL(form.redirect_uri);
@@ -176,8 +194,18 @@ app.get("/admin", (c) => {
 app.post("/admin/login", async (c) => {
   const form = await c.req.parseBody();
   if (!safeEqual(String(form.password ?? ""), Resource.AdminPassword.value)) {
+    await sendSecurityAlert({
+      title: "Failed admin sign-in attempt",
+      outcome: "failure",
+      details: { ...requestContext(c), Where: "Admin web UI" },
+    });
     return c.html(loginPage("That password is not correct."), 401);
   }
+  await sendSecurityAlert({
+    title: "Admin signed in",
+    outcome: "success",
+    details: { ...requestContext(c), Where: "Admin web UI" },
+  });
   setCookie(c, SESSION, signSession(), {
     httpOnly: true,
     secure: true,

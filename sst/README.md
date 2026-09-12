@@ -83,6 +83,23 @@ OAuth endpoints: `/.well-known/oauth-protected-resource`,
 (DynamoDB TTL sweeps the rest). Revoke every OAuth grant by rotating `EncryptionKey`,
 which invalidates the signatures on all issued tokens.
 
+## Sign-in alerts
+
+Every sign-in attempt mails the operator, sent from the first configured account to its
+own address:
+
+| Event | Alert |
+|---|---|
+| Admin signs in to the web UI | ✓ Admin signed in |
+| Wrong admin password on the web UI | ⚠ Failed admin sign-in attempt |
+| A connector completes OAuth consent | ✓ New connector authorized: `<name>` |
+| Wrong password on the consent screen | ⚠ Failed connector authorization |
+
+Each mail carries the time, IP address and browser, plus the commands to rotate
+credentials. Failure alerts are throttled to one per five minutes per kind — an atomic
+conditional write claims the window, so a brute-force attempt cannot become a mail
+flood. Alert failures are logged and swallowed; they never block a login.
+
 ## Operating
 
 ```bash
