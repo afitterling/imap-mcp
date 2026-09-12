@@ -17,6 +17,13 @@ export default $config({
       primaryIndex: { hashKey: "accountId" },
     });
 
+    // OAuth clients and short-lived authorization codes.
+    const oauth = new sst.aws.Dynamo("OAuth", {
+      fields: { id: "string" },
+      primaryIndex: { hashKey: "id" },
+      ttl: "expiresAt",
+    });
+
     // Secrets: set with `sst secret set <name> <value>`
     const encryptionKey = new sst.Secret("EncryptionKey");
     const adminPassword = new sst.Secret("AdminPassword");
@@ -28,7 +35,7 @@ export default $config({
       timeout: "60 seconds",
       memory: "512 MB",
       nodejs: { install: ["imapflow", "mailparser", "nodemailer"] },
-      link: [accounts, encryptionKey, adminPassword, mcpToken],
+      link: [accounts, oauth, encryptionKey, adminPassword, mcpToken],
     });
 
     return {

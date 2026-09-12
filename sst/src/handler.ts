@@ -8,6 +8,17 @@ import { signSession, verifySession, safeEqual } from "./lib/crypto.js";
 import { listAccounts, getAccount, putAccount, deleteAccount, redact } from "./lib/store.js";
 import { testAccount } from "./lib/mail.js";
 import { handleRpc } from "./mcp/server.js";
+import {
+  verifyToken,
+  issueTokens,
+  registerClient,
+  getClient,
+  issueCode,
+  redeemCode,
+  protectedResourceMetadata,
+  authorizationServerMetadata,
+} from "./lib/oauth.js";
+import { authorizePage } from "./web/authorize.js";
 import { loginPage } from "./web/login.js";
 import { appPage } from "./web/app.js";
 
@@ -26,19 +37,24 @@ app.use(
   }),
 );
 
-/** Bearer header, or ?token= for clients that cannot set headers. */
+/**
+ * Three ways in: an OAuth access token (claude.ai connectors), the static token as a
+ * Bearer header (Claude Code), or ?token= for clients that can set neither.
+ */
 function authorized(c: any): boolean {
   const expected = Resource.McpToken.value;
   const header = c.req.header("authorization") ?? "";
   const bearer = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
   const query = c.req.query("token") ?? "";
+  if (bearer && verifyToken(bearer, "access")) return true;
   return safeEqual(bearer, expected) || safeEqual(query, expected);
 }
 
 app.post("/mcp", async (c) => {
   if (!authorized(c)) {
+    const origin = new URL(c.req.url).origin;
     return c.json({ error: "unauthorized" }, 401, {
-      "WWW-Authenticate": 'Bearer realm="webmail-mcp"',
+      "WWW-Authenticate": `Bearer realm="webmail-mcp", resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
     });
   }
   let body: unknown;
@@ -55,6 +71,93 @@ app.post("/mcp", async (c) => {
 // This server is stateless: there is no server-initiated stream to open or session to end.
 app.get("/mcp", (c) => c.json({ error: "method_not_allowed" }, 405));
 app.delete("/mcp", (c) => c.body(null, 204));
+
+/* --------------------------------- OAuth --------------------------------- */
+
+app.use("/.well-known/*", cors({ origin: "*" }));
+app.use("/oauth/register", cors({ origin: "*", allowMethods: ["POST", "OPTIONS"] }));
+app.use("/oauth/token", cors({ origin: "*", allowMethods: ["POST", "OPTIONS"] }));
+
+const origin = (c: any) => new URL(c.req.url).origin;
+
+// Some clients probe the path-suffixed form of the resource metadata, some the bare one.
+app.get("/.well-known/oauth-protected-resource", (c) => c.json(protectedResourceMetadata(origin(c))));
+app.get("/.well-known/oauth-protected-resource/mcp", (c) => c.json(protectedResourceMetadata(origin(c))));
+app.get("/.well-known/oauth-authorization-server", (c) => c.json(authorizationServerMetadata(origin(c))));
+app.get("/.well-known/oauth-authorization-server/mcp", (c) => c.json(authorizationServerMetadata(origin(c))));
+
+/** RFC 7591 dynamic client registration — open, since PKCE plus the consent screen gate access. */
+app.post("/oauth/register", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as any);
+  const redirectUris: string[] = body.redirect_uris ?? [];
+  if (!redirectUris.length) {
+    return c.json({ error: "invalid_redirect_uri", error_description: "redirect_uris is required" }, 400);
+  }
+  const client = await registerClient(body.client_name ?? "MCP client", redirectUris);
+  return c.json(
+    {
+      client_id: client.clientId,
+      client_id_issued_at: client.createdAt,
+      client_name: client.name,
+      redirect_uris: client.redirectUris,
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    },
+    201,
+  );
+});
+
+const AUTH_FIELDS = ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "resource", "scope"];
+
+app.get("/oauth/authorize", async (c) => {
+  const q = c.req.query();
+  const client = await getClient(q.client_id ?? "");
+  if (!client) return c.text("Unknown client_id. Re-add the connector so it can register again.", 400);
+  if (!client.redirectUris.includes(q.redirect_uri ?? "")) return c.text("redirect_uri is not registered for this client.", 400);
+  if (q.code_challenge_method !== "S256" || !q.code_challenge) return c.text("PKCE with S256 is required.", 400);
+
+  const params = Object.fromEntries(AUTH_FIELDS.filter((k) => q[k]).map((k) => [k, q[k]!]));
+  return c.html(authorizePage({ clientName: client.name, params }));
+});
+
+app.post("/oauth/authorize", async (c) => {
+  const form = (await c.req.parseBody()) as Record<string, string>;
+  const client = await getClient(form.client_id ?? "");
+  if (!client || !client.redirectUris.includes(form.redirect_uri ?? "")) {
+    return c.text("Invalid authorization request.", 400);
+  }
+  const params = Object.fromEntries(AUTH_FIELDS.filter((k) => form[k]).map((k) => [k, form[k]]));
+
+  if (!safeEqual(String(form.password ?? ""), Resource.AdminPassword.value)) {
+    return c.html(authorizePage({ clientName: client.name, params, error: "That password is not correct." }), 401);
+  }
+
+  const code = await issueCode(client.clientId, form.redirect_uri, form.code_challenge);
+  const target = new URL(form.redirect_uri);
+  target.searchParams.set("code", code);
+  if (form.state) target.searchParams.set("state", form.state);
+  return c.redirect(target.toString(), 302);
+});
+
+app.post("/oauth/token", async (c) => {
+  const form = (await c.req.parseBody()) as Record<string, string>;
+  try {
+    if (form.grant_type === "authorization_code") {
+      await redeemCode(form.code, form.client_id, form.redirect_uri, form.code_verifier ?? "");
+      return c.json(issueTokens(form.client_id));
+    }
+    if (form.grant_type === "refresh_token") {
+      const payload = verifyToken(form.refresh_token ?? "", "refresh");
+      if (!payload) return c.json({ error: "invalid_grant" }, 400);
+      return c.json(issueTokens(payload.cid));
+    }
+    return c.json({ error: "unsupported_grant_type" }, 400);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "invalid_grant", error_description: message }, 400);
+  }
+});
 
 /* ------------------------------- Admin auth ------------------------------- */
 

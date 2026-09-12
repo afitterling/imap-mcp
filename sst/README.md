@@ -25,7 +25,8 @@ Browser ──session cookie──> /admin ┘        └──> IMAP / SMTP of 
 - `src/mcp/` — JSON-RPC over Streamable HTTP (stateless) and the tool definitions
 - `src/lib/mail.ts` — IMAP (imapflow) + SMTP (nodemailer); connections open and close per request
 - `src/lib/crypto.ts` — credential encryption and signed admin sessions
-- `src/web/` — login and admin pages
+- `src/lib/oauth.ts` — OAuth 2.1: registration, PKCE codes, signed access/refresh tokens
+- `src/web/` — login, consent and admin pages
 
 ## Tools exposed to Claude
 
@@ -49,8 +50,25 @@ claude mcp add --transport http --scope user webmail <mcp-url> \
 ```
 
 Claude desktop / claude.ai: Settings → Connectors → Add custom connector, paste the MCP
-URL and the `Authorization: Bearer <token>` header. Where custom headers aren't
-available, append `?token=<token>` to the URL. Both values are shown on the admin page.
+URL, and click Connect. The server implements OAuth 2.1, so Claude registers itself
+(RFC 7591), sends you to a consent screen, and you approve with the admin password —
+no token handling. Access tokens last 30 days and refresh silently.
+
+## Auth
+
+Three ways in, all checked at `/mcp`:
+
+| Client | Mechanism |
+|---|---|
+| claude.ai / Claude desktop | OAuth 2.1 + PKCE (S256), dynamic client registration |
+| Claude Code | static `Authorization: Bearer <McpToken>` |
+| Anything that can't set headers | `?token=<McpToken>` |
+
+OAuth endpoints: `/.well-known/oauth-protected-resource`,
+`/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`,
+`/oauth/token`. Authorization codes are single-use, PKCE-bound and expire in 10 minutes
+(DynamoDB TTL sweeps the rest). Revoke every OAuth grant by rotating `EncryptionKey`,
+which invalidates the signatures on all issued tokens.
 
 ## Operating
 
