@@ -1,5 +1,7 @@
 import { listAccounts, redact, resolveAccount } from "../lib/store.js";
 import * as mail from "../lib/mail.js";
+import { beautify } from "../lib/beautify.js";
+import { requireApproval, queueSend } from "../lib/outbox.js";
 
 type Tool = {
   name: string;
@@ -15,6 +17,25 @@ export type RawContent = { __mcpContent: unknown[] };
 const account = {
   type: "string",
   description: "Mail account to act on — its label, email address, or id. Use list_accounts first.",
+};
+
+/**
+ * Models write markdown-ish plain text; mail clients render it as a wall of
+ * characters. Produce a formatted HTML part from it unless the caller supplied
+ * their own HTML or opted out. The text part is kept as the fallback.
+ */
+function htmlFor(a: any): string | undefined {
+  if (a.html) return a.html;
+  if (a.beautify === false || !a.text) return undefined;
+  return beautify(String(a.text));
+}
+
+const formattingProps = {
+  beautify: {
+    type: "boolean",
+    description:
+      "Default true: the plain text is also rendered as a cleanly formatted HTML mail (headings, lists, tables, links). Set false only if the user wants plain text only.",
+  },
 };
 
 const attachmentsSchema = {
@@ -92,7 +113,7 @@ export const tools: Tool[] = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Send an email from one of the connected accounts over SMTP, optionally with attachments. Confirm recipient, content and any attachments with the user before calling — sent mail cannot be recalled.",
+      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the Webmail MCP admin page, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
     inputSchema: {
       type: "object",
       properties: {
@@ -106,6 +127,7 @@ export const tools: Tool[] = [
         replyTo: { type: "string" },
         inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
         attachments: attachmentsSchema,
+        ...formattingProps,
       },
       required: ["account", "to", "subject"],
     },
@@ -114,7 +136,34 @@ export const tools: Tool[] = [
       validateAttachmentSpecs(a.attachments ?? []);
       const acct = await resolveAccount(a.account);
       const attachments = await resolveAttachments(acct, a.attachments ?? []);
-      return mail.sendMessage(acct, { ...a, attachments });
+      const args = { ...a, attachments, html: htmlFor(a) };
+
+      if (!(await requireApproval())) {
+        return { ...(await mail.sendMessage(acct, args)), approvalRequired: false };
+      }
+
+      // Park the composed message in the mailbox; only a human click releases it.
+      const draft = await mail.createDraft(acct, args);
+      const pending = await queueSend({
+        accountId: acct.accountId,
+        accountLabel: acct.label,
+        folder: draft.folder,
+        uid: draft.uid!,
+        to: a.to,
+        cc: a.cc,
+        bcc: a.bcc,
+        subject: a.subject,
+        preview: String(a.text ?? "").slice(0, 400),
+        attachments: (attachments ?? []).map((x) => ({ filename: x.filename, size: x.content.length })),
+      });
+      return {
+        sent: false,
+        status: "awaiting_approval",
+        approvalId: pending.id,
+        parkedIn: `${draft.folder} (uid ${draft.uid})`,
+        message:
+          "NOT SENT. The mail is composed and waiting for the user to approve it by hand on the Webmail MCP admin page (Outbox). Tell the user it needs their approval there — you cannot release it yourself.",
+      };
     },
   },
   {
@@ -135,6 +184,7 @@ export const tools: Tool[] = [
         replyTo: { type: "string" },
         inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
         attachments: attachmentsSchema,
+        ...formattingProps,
         folder: { type: "string", description: "Override the drafts folder if auto-detection picks the wrong one." },
       },
       required: ["account"],
@@ -143,7 +193,7 @@ export const tools: Tool[] = [
       validateAttachmentSpecs(a.attachments ?? []);
       const acct = await resolveAccount(a.account);
       const attachments = await resolveAttachments(acct, a.attachments ?? []);
-      return mail.createDraft(acct, { ...a, attachments });
+      return mail.createDraft(acct, { ...a, attachments, html: htmlFor(a) });
     },
   },
   {

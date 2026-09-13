@@ -1,0 +1,50 @@
+WEBMAIL MCP — PRODUCTION
+========================
+Stage:    production   (AWS 327261196437, eu-central-1)
+Deployed: 2026-09-13
+
+URLs
+----
+Base        https://mlnmxl3wkp6b7oh7ipitygigti0ajzik.lambda-url.eu-central-1.on.aws/
+Admin UI    https://mlnmxl3wkp6b7oh7ipitygigti0ajzik.lambda-url.eu-central-1.on.aws/admin
+MCP         https://mlnmxl3wkp6b7oh7ipitygigti0ajzik.lambda-url.eu-central-1.on.aws/mcp
+Health      https://mlnmxl3wkp6b7oh7ipitygigti0ajzik.lambda-url.eu-central-1.on.aws/health
+Outbox      Admin UI -> section "Outbox" (approve or discard queued mail)
+
+Other stage
+-----------
+alex (development, no mail accounts configured)
+https://uxtjw6anklhf5bmg44dt6dqffu0ptmtw.lambda-url.eu-central-1.on.aws/
+
+Connect Claude
+--------------
+claude.ai / desktop : Settings -> Connectors -> Add custom connector -> paste the MCP
+                      URL -> Connect -> approve with the admin password (OAuth 2.1).
+Claude Code         : claude mcp add --transport http --scope user webmail <MCP URL> \
+                        --header "Authorization: Bearer <McpToken>"
+
+After deploying a new tool, an already-connected client keeps its cached tool list.
+Reconnect the connector, or start a new conversation, to pick up new tools.
+
+Credentials
+-----------
+Admin password and MCP token: sst/.credentials.local (git-ignored, local only).
+Rotate:  npx sst secret set AdminPassword <new> --stage production
+         npx sst secret set McpToken      <new> --stage production
+         npx sst secret set EncryptionKey <new> --stage production   # revokes all OAuth grants
+Then redeploy.
+
+Safety
+------
+- send_message NEVER sends by itself. It composes, saves to Drafts and queues the mail
+  for manual approval in the admin Outbox. Only a human click releases it.
+- The toggle "Hold every mail Claude composes until I approve it here" controls this.
+  It is ON by default. Turning it off lets Claude send directly.
+- Every sign-in attempt (and every approved send) is mailed to the first configured
+  account. Failure alerts are throttled to one per 5 minutes.
+
+AWS resources
+-------------
+Lambda    webmail-mcp-production-ServerFunction-hkhezwao
+DynamoDB  webmail-mcp-production-AccountsTable-*   (mail accounts, encrypted creds)
+          webmail-mcp-production-OAuthTable-xvdkzuxc (OAuth clients, codes, outbox, settings)

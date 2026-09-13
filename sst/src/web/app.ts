@@ -71,6 +71,19 @@ export const appPage = (mcpUrl: string, mcpToken: string) => `<!doctype html>
     </ol>
   </div>
 
+  <h2>Outbox <span id="obCount"></span></h2>
+  <div class="card" style="margin-bottom:12px">
+    <label style="display:flex;align-items:center;gap:10px;margin:0;text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">
+      <input type="checkbox" id="reqApproval" onchange="saveSetting()" style="width:auto;margin:0">
+      Hold every mail Claude composes until I approve it here
+    </label>
+    <div class="hint" style="margin-top:8px">
+      With this on, <code>send_message</code> cannot put mail on the wire. Claude composes it, it is saved
+      to your Drafts, and it goes out only when you press Send below. Turning it off lets Claude send directly.
+    </div>
+  </div>
+  <div class="grid" id="outbox"></div>
+
   <h2>Mail accounts</h2>
   <div class="grid" id="accounts"><div class="empty">Loading…</div></div>
 
@@ -142,6 +155,55 @@ function esc(s) {
     return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c];
   });
 }
+async function loadOutbox() {
+  const res = await fetch('/api/outbox');
+  if (res.status === 401) return location.reload();
+  const data = await res.json();
+  $('reqApproval').checked = data.requireApproval;
+  const el = $('outbox');
+  $('obCount').textContent = data.pending.length ? '(' + data.pending.length + ' waiting)' : '';
+  if (!data.pending.length) {
+    el.innerHTML = '<div class="empty">Nothing waiting for approval.</div>';
+    return;
+  }
+  el.innerHTML = data.pending.map(function(p) {
+    var att = p.attachments && p.attachments.length
+      ? '<span class="chip">' + p.attachments.length + ' attachment(s)</span>' : '';
+    return '<div class="acct"><div style="min-width:0;flex:1">' +
+      '<h3>' + esc(p.subject || '(no subject)') + '</h3>' +
+      '<div class="meta">To ' + esc(p.to) + (p.cc ? ' · cc ' + esc(p.cc) : '') + '</div>' +
+      '<div style="margin-top:9px"><span class="chip">' + esc(p.accountLabel) + '</span>' +
+        '<span class="chip">' + esc(p.folder) + ' uid ' + p.uid + '</span>' + att + '</div>' +
+      '<pre style="white-space:pre-wrap;font:12.5px/1.5 ui-monospace,Menlo,monospace;background:var(--bg);' +
+        'border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0 0;max-height:150px;overflow:auto">' +
+        esc(p.preview) + '…</pre>' +
+      '<div class="status" id="ob-' + p.id + '"></div>' +
+    '</div><div class="row" style="align-items:flex-start">' +
+      '<button class="primary" onclick="approve(\'' + p.id + '\')">Send now</button>' +
+      '<button class="danger" onclick="discard(\'' + p.id + '\')">Discard</button>' +
+    '</div></div>';
+  }).join('');
+}
+async function saveSetting() {
+  await fetch('/api/outbox/settings', {
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ requireApproval: $('reqApproval').checked })
+  });
+  loadOutbox();
+}
+async function approve(id) {
+  if (!confirm('Send this mail now? It cannot be recalled.')) return;
+  var s = $('ob-' + id); s.className = 'status'; s.textContent = 'Sending…';
+  var res = await fetch('/api/outbox/' + id + '/approve', { method:'POST' });
+  var body = await res.json();
+  if (!res.ok) { s.className = 'status bad'; s.textContent = body.error; return; }
+  loadOutbox();
+}
+async function discard(id) {
+  if (!confirm('Discard this queued mail? The draft stays in your Drafts folder.')) return;
+  await fetch('/api/outbox/' + id + '/discard', { method:'POST' });
+  loadOutbox();
+}
 async function load() {
   const res = await fetch('/api/accounts');
   if (res.status === 401) return location.reload();
@@ -209,4 +271,5 @@ async function del(id, label) {
 }
 const dlg = $('dlg');
 load();
+loadOutbox();
 </script></body></html>`;

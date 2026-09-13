@@ -6,7 +6,7 @@ import { Resource } from "sst";
 import { randomUUID } from "node:crypto";
 import { signSession, verifySession, safeEqual } from "./lib/crypto.js";
 import { listAccounts, getAccount, putAccount, deleteAccount, redact } from "./lib/store.js";
-import { testAccount } from "./lib/mail.js";
+import { testAccount, sendParkedMessage as mailSendParked } from "./lib/mail.js";
 import { handleRpc } from "./mcp/server.js";
 import {
   verifyToken,
@@ -20,6 +20,7 @@ import {
 } from "./lib/oauth.js";
 import { authorizePage } from "./web/authorize.js";
 import { sendSecurityAlert, requestContext } from "./lib/notify.js";
+import { requireApproval, setRequireApproval, listPending, getPending, dropPending } from "./lib/outbox.js";
 import { loginPage } from "./web/login.js";
 import { appPage } from "./web/app.js";
 
@@ -229,6 +230,54 @@ app.use("/api/*", async (c, next) => {
 });
 
 app.get("/api/accounts", async (c) => c.json((await listAccounts()).map(redact)));
+
+/* ---------------------------------- Outbox ---------------------------------- */
+
+app.get("/api/outbox", async (c) =>
+  c.json({ requireApproval: await requireApproval(), pending: await listPending() }),
+);
+
+app.post("/api/outbox/settings", async (c) => {
+  const body = await c.req.json();
+  await setRequireApproval(body.requireApproval !== false);
+  return c.json({ requireApproval: await requireApproval() });
+});
+
+/** The human gate: this is the only path that actually puts a queued mail on the wire. */
+app.post("/api/outbox/:id/approve", async (c) => {
+  const pending = await getPending(c.req.param("id"));
+  if (!pending) return c.json({ error: "This item is no longer waiting for approval." }, 404);
+  const account = await getAccount(pending.accountId);
+  if (!account) return c.json({ error: "The sending account no longer exists." }, 404);
+
+  const recipients = [pending.to, pending.cc, pending.bcc].filter(Boolean).join(",");
+  try {
+    const result = await mailSendParked(account, pending.folder, pending.uid, recipients);
+    await dropPending(pending.id);
+    await sendSecurityAlert({
+      title: "Mail approved and sent",
+      outcome: "success",
+      details: {
+        ...requestContext(c),
+        To: pending.to,
+        Subject: pending.subject,
+        Account: pending.accountLabel,
+        "Filed in": result.filedIn,
+      },
+    });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
+
+app.post("/api/outbox/:id/discard", async (c) => {
+  const pending = await getPending(c.req.param("id"));
+  if (!pending) return c.json({ error: "Not found" }, 404);
+  await dropPending(pending.id);
+  // The parked message stays in Drafts so nothing the user wrote is destroyed.
+  return c.json({ discarded: true, stillInDrafts: `${pending.folder} (uid ${pending.uid})` });
+});
 
 app.post("/api/accounts", async (c) => {
   const b = await c.req.json();

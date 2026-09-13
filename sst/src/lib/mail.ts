@@ -348,6 +348,66 @@ export async function createDraft(a: Account, args: SendArgs & { folder?: string
   });
 }
 
+const SENT_NAMES = ["sent", "sent items", "sent mail", "gesendet", "inbox.sent", "[gmail]/sent mail"];
+
+async function findSentFolder(c: ImapFlow): Promise<string | undefined> {
+  const folders = await c.list();
+  return (
+    folders.find((f) => f.specialUse === "\\Sent")?.path ??
+    folders.find((f) => SENT_NAMES.includes(f.path.toLowerCase()))?.path
+  );
+}
+
+/**
+ * Send a message that was parked in a folder awaiting human approval. The stored
+ * MIME is sent verbatim, so what the approver reviewed is exactly what goes out.
+ */
+export async function sendParkedMessage(a: Account, folder: string, uid: number, envelopeTo: string) {
+  const raw = await withImap(a, async (c) => {
+    const lock = await c.getMailboxLock(folder);
+    try {
+      const downloaded = await c.download(String(uid), undefined, { uid: true });
+      if (!downloaded) throw new Error(`The approved message (uid ${uid}) is no longer in ${folder}.`);
+      const chunks: Buffer[] = [];
+      for await (const chunk of downloaded.content) chunks.push(chunk as Buffer);
+      return Buffer.concat(chunks);
+    } finally {
+      lock.release();
+    }
+  });
+
+  const transport = nodemailer.createTransport({
+    host: a.smtp.host,
+    port: a.smtp.port,
+    secure: a.smtp.secure,
+    auth: { user: a.smtp.user, pass: smtpPassword(a) },
+  });
+  const info = await transport.sendMail({
+    envelope: { from: a.email, to: envelopeTo.split(",").map((x) => x.trim()) },
+    raw,
+  });
+  transport.close();
+
+  // File the sent copy where the user's mail client expects it.
+  let filedIn: string | undefined;
+  await withImap(a, async (c) => {
+    const sent = await findSentFolder(c);
+    const lock = await c.getMailboxLock(folder);
+    try {
+      if (sent && sent !== folder) {
+        await c.messageMove(String(uid), sent, { uid: true });
+        filedIn = sent;
+      } else {
+        await c.messageFlagsAdd(String(uid), ["\\Deleted"], { uid: true });
+      }
+    } finally {
+      lock.release();
+    }
+  }).catch(() => undefined);
+
+  return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected, filedIn };
+}
+
 export async function createFolder(a: Account, path: string) {
   return withImap(a, async (c) => {
     const res = await c.mailboxCreate(path);
