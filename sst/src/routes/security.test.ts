@@ -23,6 +23,9 @@ test("same-origin form post passes; cross-site is refused", async () => {
   assert.equal((await app.request(req("/login", { "sec-fetch-site": "cross-site" }))).status, 403);
   assert.equal((await app.request(req("/login", { origin: "https://evil.test" }))).status, 403);
   assert.equal((await app.request(req("/login", { origin: ORIGIN }))).status, 200);
+  // Safari: same-origin per fetch metadata but "Origin: null"
+  assert.equal((await app.request(req("/login", { "sec-fetch-site": "same-origin", origin: "null" }))).status, 200);
+  assert.equal((await app.request(req("/login", { origin: "null" }))).status, 403);
 });
 
 test("JSON API additionally requires the custom header", async () => {
