@@ -495,7 +495,7 @@ $('totpSetup').addEventListener('click', async () => {
     $('totpQr').innerHTML = r.qrSvg; $('totpSecret').textContent = r.secret.replace(/(.{4})/g, '$1 ').trim(); $('totpCode').value = ''; status('totpDlgStatus', ''); status('totpStatus', '');
     $('totpDlg').showModal(); $('totpCode').focus();
   } catch (e) {
-    if (/sign in again/i.test(e.message)) { location.href = '/login?next=' + encodeURIComponent('/app#security'); return; }
+    if (/sign in again/i.test(e.message)) { location.href = '/login?reauth=1&next=' + encodeURIComponent('/app#security'); return; }
     status('totpStatus', e.message, 'bad');
   }
 });

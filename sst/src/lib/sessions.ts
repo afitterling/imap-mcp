@@ -20,6 +20,8 @@ export type Session = {
   /** Cognito access token (encrypted) for user-level Cognito calls such as MFA setup; ~1 h. */
   cognitoAccess?: string;
   cognitoAccessExpiresAt?: number;
+  /** Signed in with Cognito but no authenticator registered yet: only /setup-mfa is allowed. */
+  mfaRequired?: boolean;
   createdAt: string;
   lastSeenAt: string;
   ip?: string;
@@ -37,7 +39,7 @@ export function clientIp(c: Context): string | undefined {
   return forwarded ? forwarded.split(",")[0].trim() : undefined;
 }
 
-export async function createSession(c: Context, user: User, cognito?: { accessToken: string; expiresIn?: number }): Promise<Session> {
+export async function createSession(c: Context, user: User, cognito?: { accessToken: string; expiresIn?: number }, mfaRequired = false): Promise<Session> {
   const token = randomToken(32);
   const now = epoch();
   const ttl = ABSOLUTE_SECONDS;
@@ -47,6 +49,7 @@ export async function createSession(c: Context, user: User, cognito?: { accessTo
     sessionVersion: user.sessionVersion ?? 1,
     cognitoAccess: cognito ? encrypt(cognito.accessToken) : undefined,
     cognitoAccessExpiresAt: cognito ? now + (cognito.expiresIn ?? 3600) - 60 : undefined,
+    mfaRequired: mfaRequired || undefined,
     createdAt: new Date().toISOString(),
     lastSeenAt: new Date().toISOString(),
     ip: clientIp(c),
@@ -112,6 +115,10 @@ export async function deleteSessionById(id: string): Promise<void> {
   await doc.send(new DeleteCommand({ TableName: TABLE(), Key: { id: `session#${id}` } }));
 }
 
+export async function clearMfaRequired(sessionId: string): Promise<void> {
+  await doc.send(new UpdateCommand({ TableName: TABLE(), Key: { id: `session#${sessionId}` }, UpdateExpression: "REMOVE mfaRequired" }));
+}
+
 /** The Cognito access token of this session, if still valid. */
 export function cognitoAccessToken(s: Session): string | undefined {
   if (!s.cognitoAccess || !s.cognitoAccessExpiresAt || s.cognitoAccessExpiresAt <= epoch()) return undefined;
@@ -123,9 +130,17 @@ export function cognitoAccessToken(s: Session): string | undefined {
 export type Signed = Session & { user: User };
 
 /** Fully signed-in user or undefined. Routes decide whether to 401 or redirect. */
-export async function getSigned(c: Context): Promise<Signed | undefined> {
+export async function getSigned(c: Context, opts: { allowMfaPending?: boolean } = {}): Promise<Signed | undefined> {
   const s = await readSession(c);
-  return s && s.user.status === "active" ? s : undefined;
+  if (!s || s.user.status !== "active") return undefined;
+  if (s.mfaRequired && !opts.allowMfaPending) return undefined;
+  return s;
+}
+
+/** True when there is a session that is only waiting for the authenticator to be set up. */
+export async function mfaPending(c: Context): Promise<Signed | undefined> {
+  const s = await readSession(c);
+  return s && s.user.status === "active" && s.mfaRequired ? s : undefined;
 }
 
 export async function requireSigned(c: Context): Promise<Signed> {

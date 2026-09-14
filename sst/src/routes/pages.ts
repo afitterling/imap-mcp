@@ -1,13 +1,14 @@
 import { Hono } from "hono";
-import { type Env, ip, ua, origin } from "./ctx.js";
+import { type Env, ip, ua, origin, form } from "./ctx.js";
 import { landingPage } from "../web/pages/landing.js";
 import { supportPage } from "../web/pages/support.js";
 import { docsPage } from "../web/pages/docs.js";
-import { authPage } from "../web/pages/login.js";
+import { authPage, setupMfaPage } from "../web/pages/login.js";
+import QRCode from "qrcode";
 import { appPage } from "../web/pages/app.js";
-import { readSession, createSession, destroySession, getSigned, type Signed } from "../lib/sessions.js";
+import { readSession, createSession, destroySession, getSigned, mfaPending, clearMfaRequired, cognitoAccessToken, type Signed } from "../lib/sessions.js";
 import { upsertFromClaims, publicUser } from "../lib/users.js";
-import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl, userStatus } from "../lib/cognito.js";
+import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl, userStatus, beginTotp, confirmTotp, otpauthUri } from "../lib/cognito.js";
 import { getClient, createGrant, issueCode } from "../lib/oauth.js";
 import { hit, LIMITS } from "../lib/ratelimit.js";
 import { audit, ANONYMOUS } from "../lib/audit.js";
@@ -32,7 +33,11 @@ pages.get("/signup", (c) => c.redirect("/login")); // Cognito's managed login ha
 
 /** Hand the browser to Cognito's managed login (authorization code + PKCE). */
 pages.get("/login", async (c) => {
-  if (await getSigned(c)) return c.redirect("/app");
+  // A plain /login while signed in goes to the app; with ?reauth=1 the current session is
+  // dropped and the person goes through Cognito again (used to refresh the access token).
+  const signed = await getSigned(c);
+  if (signed && c.req.query("reauth") !== "1") return c.redirect("/app");
+  if (signed) await destroySession(c);
   const addr = ip(c) ?? "unknown";
   if (!(await hit("login-ip", addr, LIMITS.loginPerIp.limit, LIMITS.loginPerIp.window))) return c.text("Too many attempts. Please wait a few minutes.", 429);
   const next = c.req.query("next");
@@ -70,16 +75,7 @@ pages.get("/auth/callback", async (c) => {
   // enforced from the next sign-in on. Never open a session without a registered second factor:
   // end the Cognito session and send the person back through sign-in, where setup is forced.
   const cognito = await userStatus(claims.email);
-  if (!cognito?.mfa.length) {
-    await audit({ userId: claims.sub, kind: "auth", action: "auth.login", outcome: "denied", target: claims.email, details: { reason: "mfa-not-set-up" }, ip: ip(c), ua: ua(c) });
-    return c.html(
-      authPage(nonce, {
-        error: "Your account has no authenticator app yet. Sign in once more — you will be asked to set it up before you get in.",
-        continueHref: await logoutUrl(`${origin(c)}/login`),
-      }),
-      403,
-    );
-  }
+  const needsMfa = !cognito?.mfa.length;
 
   const { user, created } = await upsertFromClaims(claims);
   if (user.status === "disabled") {
@@ -96,6 +92,10 @@ pages.get("/auth/callback", async (c) => {
 
   // MCP OAuth consent: the user is authenticated, so mint the grant and send the client its code.
   if (state.oauth) {
+    if (needsMfa) {
+      await audit({ userId: user.userId, kind: "oauth", action: "oauth.consent", outcome: "denied", details: { reason: "mfa-not-set-up" }, ip: ip(c), ua: ua(c) });
+      return fail("Set up your authenticator app first: sign in to the web app, then connect the app again.", 403);
+    }
     const p = state.oauth;
     const client = await getClient(p.client_id);
     if (!client || !client.redirectUris.includes(p.redirect_uri)) return fail("Invalid authorization request.");
@@ -114,9 +114,12 @@ pages.get("/auth/callback", async (c) => {
   }
 
   await destroySession(c);
-  await createSession(c, user, { accessToken: tokens.accessToken, expiresIn: tokens.expiresIn });
-  await audit({ userId: user.userId, kind: "auth", action: "auth.login", outcome: "success", details: { via: "cognito" }, ip: ip(c), ua: ua(c) });
-  await alertUser(user, { title: "New sign-in to your account", outcome: "success", details: { ...requestContext(c), Method: "Cognito (password + MFA)" } });
+  await createSession(c, user, { accessToken: tokens.accessToken, expiresIn: tokens.expiresIn }, needsMfa);
+  await audit({ userId: user.userId, kind: "auth", action: "auth.login", outcome: "success", details: { via: "cognito", mfaSetupPending: needsMfa }, ip: ip(c), ua: ua(c) });
+  await alertUser(user, { title: "New sign-in to your account", outcome: "success", details: { ...requestContext(c), Method: needsMfa ? "Cognito (password only — authenticator setup pending)" : "Cognito (password + MFA)" } });
+  // Cognito's auto sign-in after e-mail confirmation skips MFA setup; we do not. Nothing
+  // but the setup page works until an authenticator is registered.
+  if (needsMfa) return c.redirect("/setup-mfa");
   return c.redirect(state.next ?? "/app");
 });
 
@@ -128,11 +131,41 @@ pages.post("/logout", async (c) => {
   return c.redirect(await logoutUrl(`${origin(c)}/`));
 });
 
+/* ------------------------------ MFA setup ------------------------------ */
+
+async function renderSetup(c: any, s: Signed, error?: string) {
+  const access = cognitoAccessToken(s);
+  if (!access) return c.redirect(await logoutUrl(`${origin(c)}/login`)); // token expired: fresh sign-in
+  const secret = await beginTotp(access);
+  const qrSvg = await QRCode.toString(otpauthUri(secret, s.user.email), { type: "svg", margin: 0, errorCorrectionLevel: "M" });
+  return c.html(setupMfaPage(c.get("nonce"), { qrSvg, secret, email: s.user.email, error }), error ? 401 : 200);
+}
+
+pages.get("/setup-mfa", async (c) => {
+  const s = await mfaPending(c);
+  if (!s) return c.redirect((await getSigned(c)) ? "/app" : "/login");
+  return renderSetup(c, s);
+});
+
+pages.post("/setup-mfa", async (c) => {
+  const s = await mfaPending(c);
+  if (!s) return c.redirect("/login");
+  const access = cognitoAccessToken(s);
+  if (!access) return c.redirect(await logoutUrl(`${origin(c)}/login`));
+  const f = await form(c);
+  const ok = await confirmTotp(access, f.code ?? "").catch(() => false);
+  await audit({ userId: s.user.userId, kind: "security", action: "mfa.totp.confirm", outcome: ok ? "success" : "failure", details: { where: "setup" }, ip: ip(c), ua: ua(c) });
+  if (!ok) return renderSetup(c, s, "That code is not correct. Check the clock on your device and try again.");
+  await clearMfaRequired(s.id);
+  await alertUser(s.user, { title: "Authenticator app set up", outcome: "success", details: requestContext(c) });
+  return c.redirect("/app");
+});
+
 /* --------------------------- signed-in pages --------------------------- */
 
 pages.get("/app", async (c) => {
   const s = await getSigned(c);
-  if (!s) return c.redirect("/login?next=/app");
+  if (!s) return c.redirect((await mfaPending(c)) ? "/setup-mfa" : "/login?next=/app");
   return c.html(appPage(c.get("nonce"), publicUser(s.user), `${origin(c)}/mcp`));
 });
 
