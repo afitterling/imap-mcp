@@ -39,7 +39,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <h2 id="start">1. Getting started</h2>
       <p>Accounts live in Amazon Cognito; the app itself never sees your password.</p>
       <ol>
-        <li><b>Press Sign in</b> and choose <b>Sign up</b> on the page that opens. Only pre-approved e-mail addresses are accepted; anything else is refused on the spot.</li>
+        <li><b>Press Sign in</b> and choose <b>Sign up</b> on the page that opens. Only pre-approved e-mail addresses are accepted; anything else is refused on the spot. The name is optional.</li>
         <li><b>Choose a password</b> of at least 12 characters with upper- and lowercase letters, a digit and a symbol.</li>
         <li><b>Verify your e-mail</b> with the code Cognito mails you.</li>
         <li><b>Set up your authenticator app</b> (1Password, Apple Passwords, Google Authenticator, Authy, Microsoft Authenticator…) by scanning the QR code and entering one code. This is required for every account.</li>

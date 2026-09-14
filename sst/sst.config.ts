@@ -47,7 +47,7 @@ export default $config({
           args.deletionProtection = $app.stage === "production" ? "ACTIVE" : "INACTIVE";
           args.schemas = [
             { name: "email", attributeDataType: "String", required: true, mutable: true, stringAttributeConstraints: { minLength: "3", maxLength: "254" } },
-            { name: "name", attributeDataType: "String", required: true, mutable: true, stringAttributeConstraints: { minLength: "1", maxLength: "80" } },
+            { name: "name", attributeDataType: "String", required: false, mutable: true, stringAttributeConstraints: { minLength: "0", maxLength: "80" } },
           ];
         },
       },

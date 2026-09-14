@@ -1,4 +1,4 @@
-import { GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
 import { doc } from "./db.js";
 import { normalizeEmail } from "./allowlist.js";
@@ -52,9 +52,46 @@ export async function listUsers(): Promise<User[]> {
 }
 
 
+/**
+ * The user pool was recreated (a schema change forces that): the person is the same, the
+ * Cognito `sub` is new. Move everything they own to the new id so nothing is lost.
+ */
+async function rekey(old: User, sub: string): Promise<void> {
+  const tables = [
+    { table: Resource.Accounts.name, key: "accountId", field: "ownerId" },
+    { table: Resource.Calendars.name, key: "calendarId", field: "ownerId" },
+  ];
+  for (const t of tables) {
+    const res = await doc.send(
+      new QueryCommand({ TableName: t.table, IndexName: "byOwner", KeyConditionExpression: "ownerId = :o", ExpressionAttributeValues: { ":o": old.userId }, ProjectionExpression: t.key }),
+    );
+    for (const item of res.Items ?? []) {
+      await doc.send(new UpdateCommand({ TableName: t.table, Key: { [t.key]: item[t.key] }, UpdateExpression: `SET ${t.field} = :n`, ExpressionAttributeValues: { ":n": sub } }));
+    }
+  }
+  // Tokens, grants, outbox and settings rows carry userId as an attribute.
+  const kv = await doc.send(
+    new QueryCommand({ TableName: Resource.OAuth.name, IndexName: "byUser", KeyConditionExpression: "userId = :o", ExpressionAttributeValues: { ":o": old.userId }, ProjectionExpression: "id" }),
+  );
+  for (const item of kv.Items ?? []) {
+    if (String(item.id).startsWith("session#")) continue; // old sessions die with the old sub
+    await doc.send(new UpdateCommand({ TableName: Resource.OAuth.name, Key: { id: item.id }, UpdateExpression: "SET userId = :n", ExpressionAttributeValues: { ":n": sub } }));
+  }
+  await doc.send(new DeleteCommand({ TableName: TABLE(), Key: { userId: old.userId } }));
+  console.log(JSON.stringify({ type: "audit", kind: "user", action: "user.rekey", outcome: "success", from: old.userId, to: sub, at: new Date().toISOString() }));
+}
+
 /** Called after every verified sign-in: creates the profile on first login, refreshes it afterwards. */
 export async function upsertFromClaims(claims: IdClaims): Promise<{ user: User; created: boolean }> {
-  const existing = await getUser(claims.sub);
+  let existing = await getUser(claims.sub);
+  if (!existing) {
+    const sameEmail = await findByEmail(claims.email);
+    if (sameEmail && sameEmail.userId !== claims.sub) {
+      await rekey(sameEmail, claims.sub);
+      existing = { ...sameEmail, userId: claims.sub };
+      await doc.send(new PutCommand({ TableName: TABLE(), Item: existing }));
+    }
+  }
   const now = new Date().toISOString();
   if (existing) {
     const patch: Partial<User> = { lastLoginAt: now, email: claims.email };
