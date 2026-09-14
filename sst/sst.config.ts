@@ -113,7 +113,7 @@ export default $config({
       permissions: [
         {
           // Only what the app does for the signed-in user itself; operator actions live in scripts/user.ts.
-          actions: ["cognito-idp:ListUserPoolClients", "cognito-idp:DescribeUserPoolClient", "cognito-idp:AdminGetUser", "cognito-idp:AdminUserGlobalSignOut"],
+          actions: ["cognito-idp:ListUserPoolClients", "cognito-idp:DescribeUserPoolClient", "cognito-idp:AdminGetUser", "cognito-idp:AdminUserGlobalSignOut", "cognito-idp:AdminSetUserMFAPreference"],
           resources: [auth.arn],
         },
       ],

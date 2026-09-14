@@ -5,6 +5,7 @@ import {
   DescribeUserPoolClientCommand,
   AdminUserGlobalSignOutCommand,
   AdminGetUserCommand,
+  AdminSetUserMFAPreferenceCommand,
   AssociateSoftwareTokenCommand,
   VerifySoftwareTokenCommand,
   SetUserMFAPreferenceCommand,
@@ -150,6 +151,25 @@ export async function userStatus(email: string): Promise<{ enabled: boolean; sta
     return { enabled: u.Enabled !== false, status: u.UserStatus, mfa: (u.UserMFASettingList ?? []).map((m) => (m === "SOFTWARE_TOKEN_MFA" ? "totp" : m === "SMS_MFA" ? "sms" : m)) };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Does this user have a working authenticator? Cognito lists a method only once the MFA
+ * preference is set, which its own hosted-UI setup does not always do. Setting the
+ * preference succeeds exactly when a verified software token exists — so try it: success
+ * means "has MFA" (and it is now recorded), failure means setup is still needed.
+ */
+export async function hasTotp(email: string): Promise<boolean> {
+  const status = await userStatus(email);
+  if (status?.mfa.includes("totp")) return true;
+  try {
+    await idp.send(
+      new AdminSetUserMFAPreferenceCommand({ UserPoolId: POOL_ID(), Username: username(email), SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true } }),
+    );
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -66,8 +66,8 @@ Cognito prefix domain, authorization code + PKCE). The app never handles a passw
   `npm run user -- <list|reset-mfa|signout|disable|enable> [email] --stage <stage>`
   (`scripts/user.ts`, runs with your AWS credentials, not through the app).
 - The app client is created *after* the function (its callback is the function URL) and
-  found at runtime by name (`ListUserPoolClients`); the function gets only the four
-  `cognito-idp` actions it uses (client lookup, own status, own global sign-out), scoped
+  found at runtime by name (`ListUserPoolClients`); the function gets only the five
+  `cognito-idp` actions it uses (client lookup, own status, own global sign-out, MFA preference), scoped
   to the pool ARN — no `cognito-idp:*` link.
 
 ## Connecting Claude

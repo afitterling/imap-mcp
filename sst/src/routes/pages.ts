@@ -8,7 +8,7 @@ import QRCode from "qrcode";
 import { appPage } from "../web/pages/app.js";
 import { readSession, createSession, destroySession, getSigned, mfaPending, clearMfaRequired, cognitoAccessToken, type Signed } from "../lib/sessions.js";
 import { upsertFromClaims, publicUser } from "../lib/users.js";
-import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl, userStatus, beginTotp, confirmTotp, otpauthUri } from "../lib/cognito.js";
+import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl, hasTotp, beginTotp, confirmTotp, otpauthUri } from "../lib/cognito.js";
 import { getClient, createGrant, issueCode } from "../lib/oauth.js";
 import { hit, LIMITS } from "../lib/ratelimit.js";
 import { audit, ANONYMOUS } from "../lib/audit.js";
@@ -74,8 +74,7 @@ pages.get("/auth/callback", async (c) => {
   // Cognito's auto sign-in right after e-mail confirmation skips MFA setup; MFA is only
   // enforced from the next sign-in on. Never open a session without a registered second factor:
   // end the Cognito session and send the person back through sign-in, where setup is forced.
-  const cognito = await userStatus(claims.email);
-  const needsMfa = !cognito?.mfa.length;
+  const needsMfa = !(await hasTotp(claims.email));
 
   const { user, created } = await upsertFromClaims(claims);
   if (user.status === "disabled") {

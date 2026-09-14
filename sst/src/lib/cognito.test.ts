@@ -28,7 +28,7 @@ mock.module("@aws-sdk/client-cognito-identity-provider", {
     ListUserPoolClientsCommand: class { constructor(public input: any) {} },
     DescribeUserPoolClientCommand: class { constructor(public input: any) {} },
     AdminDisableUserCommand: class {}, AdminEnableUserCommand: class {}, AdminUserGlobalSignOutCommand: class {},
-    AdminGetUserCommand: class {}, AssociateSoftwareTokenCommand: class {}, VerifySoftwareTokenCommand: class {}, SetUserMFAPreferenceCommand: class {},
+    AdminGetUserCommand: class {}, AdminSetUserMFAPreferenceCommand: class {}, AssociateSoftwareTokenCommand: class {}, VerifySoftwareTokenCommand: class {}, SetUserMFAPreferenceCommand: class {},
   },
 });
 const { pkcePair, beginLogin, takeLoginState, issuer, clientConfig } = await import("./cognito.js");
