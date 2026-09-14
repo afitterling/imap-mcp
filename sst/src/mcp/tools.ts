@@ -29,7 +29,7 @@ export type Tool = {
 
 export class ReadOnlyError extends Error {
   constructor(a: { label: string }, what: string, where = "Accounts → Read-only") {
-    super(`Account "${a.label}" is read-only: ${what} is not allowed. The user can lift this in the Private Office MCP app under ${where}.`);
+    super(`Account "${a.label}" is read-only: ${what} is not allowed. The user can lift this in the WebMail / Private Office MCP app under ${where}.`);
   }
 }
 
@@ -187,7 +187,7 @@ export const tools: Tool[] = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the Private Office MCP app, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
+      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the WebMail / Private Office MCP app, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
     inputSchema: {
       type: "object",
       properties: {
@@ -238,7 +238,7 @@ export const tools: Tool[] = [
         approvalId: pending.id,
         parkedIn: `${draft.folder} (uid ${draft.uid})`,
         message:
-          "NOT SENT. The mail is composed and waiting for the user to approve it by hand in the Private Office MCP app (Outbox). Tell the user it needs their approval there — you cannot release it yourself.",
+          "NOT SENT. The mail is composed and waiting for the user to approve it by hand in the WebMail / Private Office MCP app (Outbox). Tell the user it needs their approval there — you cannot release it yourself.",
       };
     },
   },

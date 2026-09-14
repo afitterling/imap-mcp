@@ -2,7 +2,7 @@ import { tools, toolMap, type CallerContext } from "./tools.js";
 import { audit } from "../lib/audit.js";
 
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const SERVER_INFO = { name: "webmail-mcp", title: "Private Office MCP", version: "0.2.0" };
+const SERVER_INFO = { name: "webmail-mcp", title: "WebMail / Private Office MCP", version: "0.2.0" };
 
 type Req = { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: any };
 type Res = { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } };
@@ -15,10 +15,10 @@ const INSTRUCTIONS = [
   "Some accounts are READ-ONLY (list_accounts shows readOnly: true). On those you can list, search and",
   "read, but every tool that changes anything — sending, drafting, flagging, moving, archiving, folder",
   "changes, even marking a message read — is refused. Do not retry; tell the user the account is",
-  "read-only and that they can change that in the Private Office MCP app under Accounts.",
+  "read-only and that they can change that in the WebMail / Private Office MCP app under Accounts.",
   "",
   "NOTHING YOU DO HERE SENDS MAIL BY ITSELF. send_message composes the message, saves it to the",
-  "mailbox and queues it for the user to release by hand in the Private Office MCP app (Outbox). You cannot",
+  "mailbox and queues it for the user to release by hand in the WebMail / Private Office MCP app (Outbox). You cannot",
   "approve it. So never tell the user a mail has been sent: say it is waiting for their approval,",
   "and point them at the app. Report what the tool result actually says, nothing more.",
   "",

@@ -3,14 +3,14 @@ import { page } from "../layout.js";
 export const landingPage = (nonce: string, signedIn?: { name: string; email: string }) =>
   page({
     title: "Mail and calendars for Claude",
-    description: "Private Office MCP lets Claude read, search, draft and plan in your own mailboxes and calendars — with every send held for your approval.",
+    description: "WebMail / Private Office MCP lets Claude read, search, draft and plan in your own mailboxes and calendars — with every send held for your approval.",
     nonce,
     user: signedIn,
     active: "home",
     body: `<div class="wrap">
   <section class="hero">
     <h1>Your private office, open to Claude — on your terms.</h1>
-    <p>Private Office MCP connects Claude to the mailboxes and calendars <em>you</em> choose. It can read, search, file, draft and plan.
+    <p>WebMail / Private Office MCP connects Claude to the mailboxes and calendars <em>you</em> choose. It can read, search, file, draft and plan.
        It can never send a mail on its own, and any account can be kept strictly read-only.</p>
     <div class="row">
       ${signedIn ? `<a class="btn primary" href="/app">Open my mail</a>` : `<a class="btn primary" href="/login">Sign in</a>`}
@@ -46,6 +46,6 @@ export const landingPage = (nonce: string, signedIn?: { name: string; email: str
     at any time and expire on their own. Failed sign-ins are rate-limited and trigger an alert to you. Every page carries a strict
     Content-Security-Policy. See <a href="/support">Support</a> for details and the operator contact.
   </div>
-  <footer><span>Private Office MCP</span><a href="/docs">Manual</a><a href="/support">Support</a><a href="/health">Status</a></footer>
+  <footer><span>WebMail / Private Office MCP</span><a href="/docs">Manual</a><a href="/support">Support</a><a href="/health">Status</a></footer>
 </div>`,
   });

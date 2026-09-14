@@ -74,6 +74,6 @@ export const supportPage = (nonce: string, signedIn?: { name: string; email: str
     <p class="mb0">There is no administrator role. Resetting a lost authenticator or disabling an account is done on the command line by whoever operates the deployment — see the <a href="/docs#ops">manual</a>.</p>
     <p class="muted small mb0">Service status: <a href="/health">/health</a></p>
   </div>
-  <footer><span>Private Office MCP</span><a href="/">Home</a><a href="/docs">Manual</a><a href="/health">Status</a></footer>
+  <footer><span>WebMail / Private Office MCP</span><a href="/">Home</a><a href="/docs">Manual</a><a href="/health">Status</a></footer>
 </div>`,
   });

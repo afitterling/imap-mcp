@@ -8,7 +8,7 @@ const kv = (rows: [string, string][]) =>
 export const docsPage = (nonce: string, signedIn?: { name: string; email: string }) =>
   page({
     title: "Manual",
-    description: "How to connect Apple Mail and Apple Calendar to Claude with Private Office MCP, and what Claude can do with them.",
+    description: "How to connect Apple Mail and Apple Calendar to Claude with WebMail / Private Office MCP, and what Claude can do with them.",
     nonce,
     user: signedIn,
     active: "docs",
@@ -52,7 +52,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <ol>
         <li>Go to <a href="https://appleid.apple.com" rel="noopener">appleid.apple.com</a> and sign in.</li>
         <li>Open <b>Sign-In and Security → App-Specific Passwords</b>.</li>
-        <li>Click <b>Generate an app-specific password</b>, name it <code>Private Office MCP</code>, and copy the 16-character password (<code>xxxx-xxxx-xxxx-xxxx</code>). It is shown only once.</li>
+        <li>Click <b>Generate an app-specific password</b>, name it <code>WebMail / Private Office MCP</code>, and copy the 16-character password (<code>xxxx-xxxx-xxxx-xxxx</code>). It is shown only once.</li>
       </ol>
       <p>You can revoke it on the same page at any time; that instantly cuts Claude off from the mailbox.</p>
 
@@ -98,7 +98,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
 
       <h3 id="cal-add">Add a calendar</h3>
       <ol>
-        <li>Use the app-specific password from the mail section, or generate a second one named <code>Private Office MCP Calendar</code>.</li>
+        <li>Use the app-specific password from the mail section, or generate a second one named <code>WebMail / Private Office MCP Calendar</code>.</li>
         <li><b>Calendars → Add calendar</b>, keep the source <b>Apple iCloud Calendar</b>:</li>
       </ol>
       ${kv([
@@ -171,7 +171,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <p>Everything else — passwords (via <i>Forgot your password?</i>), sessions, tokens, connected apps, accounts, calendars — each user manages for themselves in the app.</p>
     </div>
   </div>
-  <footer><span>Private Office MCP</span><a href="/">Home</a><a href="/support">Support</a><a href="/health">Status</a></footer>
+  <footer><span>WebMail / Private Office MCP</span><a href="/">Home</a><a href="/support">Support</a><a href="/health">Status</a></footer>
 </div>`,
     script: CLIENT_LIB,
   });

@@ -8,7 +8,7 @@ export const authorizePage = (nonce: string, opts: { clientName: string; params:
     body: `<div class="auth">
   <form method="post" action="/oauth/authorize" class="card">
     <h1>Authorize ${esc(opts.clientName)}</h1>
-    <p class="lead">It wants to connect to your mail and calendars through Private Office MCP. After you approve, it can act as you:</p>
+    <p class="lead">It wants to connect to your mail and calendars through WebMail / Private Office MCP. After you approve, it can act as you:</p>
     <ol class="steps">
       <li><b>Read and search</b> messages and events in everything you have connected</li>
       <li><b>Draft and queue mail</b> — sending still needs your approval in the Outbox</li>

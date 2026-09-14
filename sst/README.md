@@ -1,4 +1,4 @@
-# Private Office MCP
+# WebMail / Private Office MCP
 
 (Infrastructure and package name remain `webmail-mcp`; renaming the SST app would recreate every resource.)
 

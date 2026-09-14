@@ -57,7 +57,7 @@ export async function alertUser(user: Pick<User, "userId" | "email">, alert: Ale
     const throttleKey = `${user.userId}#${alert.outcome}#${alert.title}`;
     if (alert.outcome === "failure" && !(await claimWindow(throttleKey, 300))) return;
     const mark = alert.outcome === "success" ? "✓" : "⚠";
-    await sendSystemMail(user.email, `${mark} Private Office MCP — ${alert.title}`, render(alert));
+    await sendSystemMail(user.email, `${mark} WebMail / Private Office MCP — ${alert.title}`, render(alert));
   } catch (err) {
     console.error("[alert] could not send alert:", err);
   }
@@ -69,7 +69,7 @@ export async function alertEveryone(alert: Alert): Promise<void> {
     if (alert.outcome === "failure" && !(await claimWindow(`all#${alert.title}`, 300))) return;
     const people = (await listUsers()).filter((u) => u.status === "active");
     const mark = alert.outcome === "success" ? "✓" : "⚠";
-    await Promise.all(people.map((a) => sendSystemMail(a.email, `${mark} Private Office MCP — ${alert.title}`, render(alert))));
+    await Promise.all(people.map((a) => sendSystemMail(a.email, `${mark} WebMail / Private Office MCP — ${alert.title}`, render(alert))));
   } catch (err) {
     console.error("[alert] could not alert admins:", err);
   }

@@ -169,12 +169,12 @@ export function page(o: PageOpts): string {
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>${esc(o.title)} — Private Office MCP</title>
+<title>${esc(o.title)} — WebMail / Private Office MCP</title>
 ${o.description ? `<meta name="description" content="${esc(o.description)}">` : ""}
 <style nonce="${o.nonce}">${CSS}</style>
 </head>
 <body>
-<div class="topbar"><div class="in"><a class="brand" href="/"><span class="dot"></span> Private Office MCP</a>${nav}</div></div>
+<div class="topbar"><div class="in"><a class="brand" href="/"><span class="dot"></span> WebMail / Private Office MCP</a>${nav}</div></div>
 ${o.body}
 ${o.script ? `<script nonce="${o.nonce}">${o.script}</script>` : ""}
 </body></html>`;

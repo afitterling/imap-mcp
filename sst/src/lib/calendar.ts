@@ -442,7 +442,7 @@ export async function createEvent(src: CalendarSource, input: EventInput): Promi
   const { headers } = auth(src);
   const uid = randomUUID();
   const root = new ICAL.Component(["vcalendar", [], []]);
-  root.updatePropertyWithValue("prodid", "-//Private Office MCP//EN");
+  root.updatePropertyWithValue("prodid", "-//WebMail / Private Office MCP//EN");
   root.updatePropertyWithValue("version", "2.0");
   const vevent = new ICAL.Component("vevent");
   vevent.updatePropertyWithValue("uid", uid);
