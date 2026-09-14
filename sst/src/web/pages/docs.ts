@@ -44,7 +44,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>Verify your e-mail</b> with the code Cognito mails you.</li>
         <li><b>Set up your authenticator app</b> (1Password, Apple Passwords, Google Authenticator, Authy, Microsoft Authenticator…) by scanning the QR code and entering one code. This is required for every account.</li>
       </ol>
-      <p>Signing in is always e-mail + password + authenticator code. Forgot the password? Use <i>Forgot your password?</i> on the sign-in page. Lost the authenticator? The operator resets it on the command line (see <a href="#ops">Operations</a>) and you set up a new one at the next sign-in. The app has five tabs: <b>Accounts</b> (mailboxes), <b>Calendars</b>, <b>Outbox</b> (mail waiting for your approval), <b>Connect Claude</b> (tokens and connected apps), <b>Activity</b> (everything that happened) and <b>Security</b> (sessions).</p>
+      <p>Signing in is always e-mail + password + authenticator code. Forgot the password? Use <i>Forgot your password?</i> on the sign-in page. New phone? <b>Security → Set up / replace authenticator</b> shows a fresh QR code. Locked out entirely? The operator resets it on the command line (see <a href="#ops">Operations</a>). The app has five tabs: <b>Accounts</b> (mailboxes), <b>Calendars</b>, <b>Outbox</b> (mail waiting for your approval), <b>Connect Claude</b> (tokens and connected apps), <b>Activity</b> (everything that happened) and <b>Security</b> (sessions).</p>
 
       <h2 id="mail">2. Apple Mail (iCloud)</h2>
       <h3 id="mail-password">Create an app-specific password</h3>
@@ -156,7 +156,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>Stored encrypted:</b> mail and calendar passwords. Your sign-in password and authenticator secret live in Cognito, never here. Tokens are stored only as hashes.</li>
         <li><b>Alerts:</b> every new sign-in, failed attempt, new token, new connector, factor change and operator actions is mailed to you.</li>
         <li><b>Revoking:</b> delete a token or disconnect an app (instant); revoke the app-specific password at Apple (instant, for both mail and calendar); <b>Security → Sign out everywhere</b>; or delete the account/calendar from the app, which erases its credentials.</li>
-        <li><b>Lost phone:</b> the operator resets your two-factor setup on the command line; Cognito asks you to enrol a new authenticator at the next sign-in.</li>
+        <li><b>New phone:</b> Security → Set up / replace authenticator. Locked out: the operator resets your two-factor setup on the command line and Cognito asks for a new authenticator at the next sign-in.</li>
       </ul>
 
       <h2 id="ops">6. Operations (command line)</h2>

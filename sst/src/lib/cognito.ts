@@ -5,6 +5,9 @@ import {
   DescribeUserPoolClientCommand,
   AdminUserGlobalSignOutCommand,
   AdminGetUserCommand,
+  AssociateSoftwareTokenCommand,
+  VerifySoftwareTokenCommand,
+  SetUserMFAPreferenceCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, PutCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
@@ -90,15 +93,15 @@ export async function takeLoginState(state: string): Promise<LoginState | undefi
 
 export type IdClaims = { sub: string; email: string; name?: string; email_verified?: boolean };
 
-export async function exchangeCode(code: string, verifier: string, redirectUri: string): Promise<{ idToken: string; accessToken: string; refreshToken?: string }> {
+export async function exchangeCode(code: string, verifier: string, redirectUri: string): Promise<{ idToken: string; accessToken: string; refreshToken?: string; expiresIn?: number }> {
   const { clientId, clientSecret } = await clientConfig();
   const body = new URLSearchParams({ grant_type: "authorization_code", client_id: clientId, code, redirect_uri: redirectUri, code_verifier: verifier });
   const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
   if (clientSecret) headers.authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
   const res = await fetch(`${DOMAIN()}/oauth2/token`, { method: "POST", headers, body, signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`Cognito token exchange failed (${res.status}).`);
-  const t = (await res.json()) as { id_token: string; access_token: string; refresh_token?: string };
-  return { idToken: t.id_token, accessToken: t.access_token, refreshToken: t.refresh_token };
+  const t = (await res.json()) as { id_token: string; access_token: string; refresh_token?: string; expires_in?: number };
+  return { idToken: t.id_token, accessToken: t.access_token, refreshToken: t.refresh_token, expiresIn: t.expires_in };
 }
 
 let idVerifier: ReturnType<typeof CognitoJwtVerifier.create> | undefined;
@@ -148,4 +151,25 @@ export async function userStatus(email: string): Promise<{ enabled: boolean; sta
   } catch {
     return undefined;
   }
+}
+
+/* ------------------------- self-service authenticator ------------------------- */
+
+/** Start (or replace) the authenticator app: Cognito returns a fresh TOTP secret for the QR code. */
+export async function beginTotp(accessToken: string): Promise<string> {
+  const res = await idp.send(new AssociateSoftwareTokenCommand({ AccessToken: accessToken }));
+  if (!res.SecretCode) throw new Error("Cognito did not return a secret.");
+  return res.SecretCode;
+}
+
+/** Prove possession with one code; on success the app becomes the user's (preferred) MFA method. */
+export async function confirmTotp(accessToken: string, code: string, deviceName = "Authenticator app"): Promise<boolean> {
+  const res = await idp.send(new VerifySoftwareTokenCommand({ AccessToken: accessToken, UserCode: code.replace(/\s+/g, ""), FriendlyDeviceName: deviceName }));
+  if (res.Status !== "SUCCESS") return false;
+  await idp.send(new SetUserMFAPreferenceCommand({ AccessToken: accessToken, SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true } }));
+  return true;
+}
+
+export function otpauthUri(secret: string, account: string, issuer = "WebMail / Private Office MCP"): string {
+  return `otpauth://totp/${encodeURIComponent(`${issuer}:${account}`)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
 }

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Context } from "hono";
 import { doc, epoch } from "./db.js";
-import { randomToken, sha256 } from "./crypto.js";
+import { randomToken, sha256, encrypt, decrypt } from "./crypto.js";
 import { getUser, type User } from "./users.js";
 
 const TABLE = () => Resource.OAuth.name;
@@ -17,6 +17,9 @@ export type Session = {
   id: string;
   userId: string;
   sessionVersion: number;
+  /** Cognito access token (encrypted) for user-level Cognito calls such as MFA setup; ~1 h. */
+  cognitoAccess?: string;
+  cognitoAccessExpiresAt?: number;
   createdAt: string;
   lastSeenAt: string;
   ip?: string;
@@ -34,7 +37,7 @@ export function clientIp(c: Context): string | undefined {
   return forwarded ? forwarded.split(",")[0].trim() : undefined;
 }
 
-export async function createSession(c: Context, user: User): Promise<Session> {
+export async function createSession(c: Context, user: User, cognito?: { accessToken: string; expiresIn?: number }): Promise<Session> {
   const token = randomToken(32);
   const now = epoch();
   const ttl = ABSOLUTE_SECONDS;
@@ -42,6 +45,8 @@ export async function createSession(c: Context, user: User): Promise<Session> {
     id: sha256(token),
     userId: user.userId,
     sessionVersion: user.sessionVersion ?? 1,
+    cognitoAccess: cognito ? encrypt(cognito.accessToken) : undefined,
+    cognitoAccessExpiresAt: cognito ? now + (cognito.expiresIn ?? 3600) - 60 : undefined,
     createdAt: new Date().toISOString(),
     lastSeenAt: new Date().toISOString(),
     ip: clientIp(c),
@@ -105,6 +110,12 @@ export async function listSessions(userId: string): Promise<Session[]> {
 
 export async function deleteSessionById(id: string): Promise<void> {
   await doc.send(new DeleteCommand({ TableName: TABLE(), Key: { id: `session#${id}` } }));
+}
+
+/** The Cognito access token of this session, if still valid. */
+export function cognitoAccessToken(s: Session): string | undefined {
+  if (!s.cognitoAccess || !s.cognitoAccessExpiresAt || s.cognitoAccessExpiresAt <= epoch()) return undefined;
+  return decrypt(s.cognitoAccess);
 }
 
 /* ----------------------------- route helpers ----------------------------- */

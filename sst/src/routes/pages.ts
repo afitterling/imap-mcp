@@ -56,8 +56,9 @@ pages.get("/auth/callback", async (c) => {
   if (!state || !q.code) return fail("This sign-in link has expired or was already used. Please start again.");
 
   let claims;
+  let tokens;
   try {
-    const tokens = await exchangeCode(q.code, state.verifier, state.redirectUri);
+    tokens = await exchangeCode(q.code, state.verifier, state.redirectUri);
     claims = await verifyIdToken(tokens.idToken);
   } catch (err) {
     console.error("[auth] callback failed:", err);
@@ -113,7 +114,7 @@ pages.get("/auth/callback", async (c) => {
   }
 
   await destroySession(c);
-  await createSession(c, user);
+  await createSession(c, user, { accessToken: tokens.accessToken, expiresIn: tokens.expiresIn });
   await audit({ userId: user.userId, kind: "auth", action: "auth.login", outcome: "success", details: { via: "cognito" }, ip: ip(c), ua: ua(c) });
   await alertUser(user, { title: "New sign-in to your account", outcome: "success", details: { ...requestContext(c), Method: "Cognito (password + MFA)" } });
   return c.redirect(state.next ?? "/app");

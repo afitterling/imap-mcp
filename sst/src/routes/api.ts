@@ -13,7 +13,9 @@ import { listGrants, revokeGrant } from "../lib/oauth.js";
 import { audit, forUser, toCsv, type AuditKind } from "../lib/audit.js";
 import { alertUser, requestContext } from "../lib/notify.js";
 import { bumpSessionVersion, publicUser } from "../lib/users.js";
-import { globalSignOut, userStatus } from "../lib/cognito.js";
+import { globalSignOut, userStatus, beginTotp, confirmTotp, otpauthUri } from "../lib/cognito.js";
+import { cognitoAccessToken } from "../lib/sessions.js";
+import QRCode from "qrcode";
 
 export const api = new Hono<Env>();
 
@@ -386,3 +388,28 @@ api.get("/activity.csv", async (c) => {
   return c.body(toCsv(rows));
 });
 
+/* ----------------------- authenticator app (self-service) ----------------------- */
+
+/** Needs the Cognito access token from this sign-in (valid ~1 h); otherwise the client re-authenticates. */
+function freshAccess(s: Signed): string {
+  const token = cognitoAccessToken(s);
+  if (!token) throw new HttpError(401, "Please sign in again to change your authenticator.");
+  return token;
+}
+
+api.post("/security/totp/start", async (c) => {
+  const s = await requireSigned(c);
+  const secret = await beginTotp(freshAccess(s));
+  const uri = otpauthUri(secret, s.user.email);
+  await audit({ ...who(c, s), kind: "security", action: "mfa.totp.start", outcome: "success" });
+  return c.json({ secret, qrSvg: await QRCode.toString(uri, { type: "svg", margin: 0, errorCorrectionLevel: "M" }) });
+});
+
+api.post("/security/totp/confirm", async (c) => {
+  const s = await requireSigned(c);
+  const ok = await confirmTotp(freshAccess(s), String((await jsonBody(c)).code ?? "")).catch(() => false);
+  await audit({ ...who(c, s), kind: "security", action: "mfa.totp.confirm", outcome: ok ? "success" : "failure" });
+  if (!ok) throw new HttpError(401, "That code is not correct. Check the clock on your device and try again.");
+  await alertUser(s.user, { title: "Authenticator app set up", outcome: "success", details: requestContext(c) });
+  return c.json({ ok: true });
+});

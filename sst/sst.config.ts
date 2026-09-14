@@ -105,7 +105,7 @@ export default $config({
       timeout: "60 seconds",
       memory: "1024 MB", // headroom for parsing messages with attachments
       logging,
-      nodejs: { install: ["imapflow", "mailparser", "nodemailer", "tsdav", "ical.js"] },
+      nodejs: { install: ["imapflow", "mailparser", "nodemailer", "tsdav", "ical.js", "qrcode"] },
       link: [users, accounts, calendars, oauth, audit, encryptionKey],
       // The pool is passed by id rather than linked so the function gets only the Cognito
       // actions it uses, instead of the link's cognito-idp:*.

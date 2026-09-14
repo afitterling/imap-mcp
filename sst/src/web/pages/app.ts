@@ -100,9 +100,11 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
         <h3>Sign-in</h3>
         <p class="muted small">Your password and two-factor authentication are managed by the account service, not stored here.</p>
         <div class="mt12"><b>Two-factor</b> <span id="mfaState" class="chip"></span></div>
+        <div class="row mt12"><button class="primary" id="totpSetup">Set up / replace authenticator</button></div>
+        <div class="status" id="totpStatus"></div>
         <ul class="small muted mt12">
           <li><b>Change password:</b> sign out, then use <i>Forgot your password?</i> on the sign-in page.</li>
-          <li><b>New phone / lost authenticator:</b> the operator resets it on the command line (<a href="/docs#ops">manual</a>); you set it up again at your next sign-in.</li>
+          <li><b>New phone:</b> use the button above — scan the new QR code and the old app stops working. If you cannot sign in at all, the operator resets it on the command line (<a href="/docs#ops">manual</a>).</li>
         </ul>
       </div>
       <div class="card">
@@ -114,6 +116,19 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
     </div>
   </section>
 </div>
+
+<!-- authenticator setup -->
+<dialog id="totpDlg"><form id="totpForm">
+  <div class="dlg-body">
+    <h3>Set up your authenticator app</h3>
+    <p class="muted small">Scan the code with 1Password, Apple Passwords, Google Authenticator, Authy… then enter the 6 digits it shows. Any previous authenticator stops working.</p>
+    <div class="qr" id="totpQr"></div>
+    <div class="hint">Can't scan? Manual key: <code id="totpSecret"></code> <button type="button" class="sm" data-copy="totpSecret">Copy</button></div>
+    <label>Code from the app</label><input id="totpCode" class="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+    <div class="status" id="totpDlgStatus"></div>
+  </div>
+  <div class="dlg-foot"><button type="button" class="ghost" id="totpCancel">Cancel</button><button type="submit" class="primary">Activate</button></div>
+</form></dialog>
 
 <!-- account form -->
 <dialog id="dlg"><form id="form">
@@ -466,6 +481,21 @@ async function loadSecurity() {
     <td class="mono">\${esc(s.ip || '')}</td><td class="right">\${s.current ? '' : '<button class="sm danger" data-sess="' + s.id + '">Sign out</button>'}</td></tr>\`).join('');
   $('sessions').querySelectorAll('[data-sess]').forEach(b => b.addEventListener('click', async () => { await api('/api/sessions/' + b.dataset.sess, { method: 'DELETE' }); loadSecurity(); }));
 }
+$('totpSetup').addEventListener('click', async () => {
+  status('totpStatus', 'Preparing…');
+  try {
+    const r = await api('/api/security/totp/start', { method: 'POST' });
+    $('totpQr').innerHTML = r.qrSvg; $('totpSecret').textContent = r.secret.replace(/(.{4})/g, '$1 ').trim(); $('totpCode').value = ''; status('totpDlgStatus', ''); status('totpStatus', '');
+    $('totpDlg').showModal(); $('totpCode').focus();
+  } catch (e) {
+    if (/sign in again/i.test(e.message)) { location.href = '/login?next=' + encodeURIComponent('/app#security'); return; }
+    status('totpStatus', e.message, 'bad');
+  }
+});
+$('totpCancel').addEventListener('click', () => $('totpDlg').close());
+$('totpForm').addEventListener('submit', async (e) => { e.preventDefault();
+  try { await api('/api/security/totp/confirm', { method: 'POST', body: { code: $('totpCode').value } }); $('totpDlg').close(); status('totpStatus', 'Authenticator active.', 'ok'); loadSecurity(); }
+  catch (err) { status('totpDlgStatus', err.message, 'bad'); } });
 $('sessAll').addEventListener('click', async () => {
   if (!confirm('Sign out of every browser, including this one?')) return;
   await api('/api/sessions/revoke-all', { method: 'POST' }); location.href = '/';
