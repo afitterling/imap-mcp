@@ -24,12 +24,31 @@ function client(a: Account): ImapFlow {
   });
 }
 
+/** imapflow reports failures as "Command failed"; the server's own words are on the error object. */
+function describeImapError(err: unknown, a: Account): Error {
+  const e = err as { message?: string; responseText?: string; authenticationFailed?: boolean; code?: string; serverResponseCode?: string };
+  const detail = e.responseText?.trim();
+  if (e.authenticationFailed || /AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(detail ?? "")) {
+    return new Error(`IMAP sign-in failed for ${a.imap.user} at ${a.imap.host}${detail ? ` — server said: "${detail}"` : ""}. For iCloud, Gmail and Yahoo use an app-specific password.`);
+  }
+  if (e.code === "ENOTFOUND" || e.code === "ECONNREFUSED" || e.code === "ETIMEDOUT") {
+    return new Error(`Could not reach ${a.imap.host}:${a.imap.port} (${e.code}). Check host and port.`);
+  }
+  return new Error(`IMAP error at ${a.imap.host}: ${detail || e.message || String(err)}`);
+}
+
 /** Connect, run, always disconnect — Lambda must not leak sockets between invocations. */
 async function withImap<T>(a: Account, fn: (c: ImapFlow) => Promise<T>): Promise<T> {
   const c = client(a);
-  await c.connect();
+  try {
+    await c.connect();
+  } catch (err) {
+    throw describeImapError(err, a);
+  }
   try {
     return await fn(c);
+  } catch (err) {
+    throw describeImapError(err, a);
   } finally {
     await c.logout().catch(() => c.close());
   }
@@ -454,8 +473,14 @@ export async function testAccount(a: Account) {
     secure: a.smtp.secure,
     auth: { user: a.smtp.user, pass: smtpPassword(a) },
   });
-  await transport.verify();
-  transport.close();
+  try {
+    await transport.verify();
+  } catch (err) {
+    const e = err as { response?: string; code?: string; message?: string };
+    throw new Error(`SMTP sign-in failed at ${a.smtp.host}:${a.smtp.port}${e.response ? ` — server said: "${e.response.trim()}"` : e.code ? ` (${e.code})` : ""}. IMAP was fine, so check the SMTP username/password and port (465 = TLS, 587 = STARTTLS).`);
+  } finally {
+    transport.close();
+  }
   result.smtp = "OK — authenticated";
   return result;
 }

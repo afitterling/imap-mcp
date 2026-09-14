@@ -73,10 +73,12 @@ export async function resolveCalendar(ref: string, ownerId: string): Promise<Cal
   const direct = await getCalendar(ref, ownerId);
   if (direct) return direct;
   const all = await listCalendars(ownerId);
-  const needle = ref.trim().toLowerCase();
-  const exact = all.find((c) => c.label.toLowerCase() === needle || c.calendarName?.toLowerCase() === needle);
+  // Names may carry XML entities from older discoveries ("Sports &amp; Activity"); compare decoded.
+  const norm = (v: string | undefined) => (v ?? "").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&apos;/gi, "'").trim().toLowerCase();
+  const needle = norm(ref);
+  const exact = all.find((c) => norm(c.label) === needle || norm(c.calendarName) === needle);
   if (exact) return exact;
-  const partial = all.filter((c) => c.label.toLowerCase().includes(needle) || c.calendarName?.toLowerCase().includes(needle));
+  const partial = all.filter((c) => norm(c.label).includes(needle) || norm(c.calendarName).includes(needle));
   if (partial.length === 1) return partial[0];
   const known = all.map((c) => `${c.label}${c.calendarName ? ` (${c.calendarName})` : ""}`).join(", ") || "none configured yet";
   throw new Error(`No calendar matches "${ref}". Known calendars: ${known}`);
