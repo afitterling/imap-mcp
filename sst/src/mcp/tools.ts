@@ -98,6 +98,8 @@ const calendar = {
   description: "Calendar to act on — its label, the calendar's name, or id. Use list_calendars first.",
 };
 
+const href = { type: "string", description: "The event's `href` as returned by list_events/get_event. Optional, but makes the lookup direct." };
+
 const eventProps = {
   summary: { type: "string", description: "Title of the event." },
   start: {
@@ -441,9 +443,9 @@ export const tools: Tool[] = [
     name: "get_event",
     title: "Get an event",
     description: "One event by uid, with attendees, reminders, recurrence rule and notes.",
-    inputSchema: { type: "object", properties: { calendar, uid: { type: "string" } }, required: ["calendar", "uid"] },
+    inputSchema: { type: "object", properties: { calendar, uid: { type: "string" }, href }, required: ["calendar", "uid"] },
     mutating: false,
-    handler: async (a, ctx) => cal.getEvent(await resolveCalendar(a.calendar, ctx.userId), String(a.uid)),
+    handler: async (a, ctx) => cal.getEvent(await resolveCalendar(a.calendar, ctx.userId), String(a.uid), a.href),
   },
   {
     name: "create_event",
@@ -459,11 +461,11 @@ export const tools: Tool[] = [
     title: "Update an event",
     description:
       "Change fields of an existing event (only the fields you pass change; `attendees` replaces the whole list and newly added people are invited). For a recurring event this edits the whole series.",
-    inputSchema: { type: "object", properties: { calendar, uid: { type: "string" }, ...eventProps }, required: ["calendar", "uid"] },
+    inputSchema: { type: "object", properties: { calendar, uid: { type: "string" }, href, ...eventProps }, required: ["calendar", "uid"] },
     mutating: true,
     handler: async (a, ctx) => {
-      const { calendar: ref, uid, ...patch } = a;
-      return cal.updateEvent(await writableCalendar(ref, ctx, "updating an event"), String(uid), patch);
+      const { calendar: ref, uid, href: h, ...patch } = a;
+      return cal.updateEvent(await writableCalendar(ref, ctx, "updating an event"), String(uid), patch, h);
     },
   },
   {
@@ -473,14 +475,14 @@ export const tools: Tool[] = [
       "Permanently delete an event (a recurring event: the whole series; attendees are told it was cancelled). Cannot be undone — show the user the title and date and get explicit confirmation before calling with confirm=true.",
     inputSchema: {
       type: "object",
-      properties: { calendar, uid: { type: "string" }, confirm: { type: "boolean", description: "Must be true, set only after the user confirmed." } },
+      properties: { calendar, uid: { type: "string" }, href, confirm: { type: "boolean", description: "Must be true, set only after the user confirmed." } },
       required: ["calendar", "uid", "confirm"],
     },
     mutating: true,
     destructive: true,
     handler: async (a, ctx) => {
       if (a.confirm !== true) throw new Error("Refused: deleting an event cannot be undone. Ask the user to confirm, then call again with confirm=true.");
-      return cal.deleteEvent(await writableCalendar(a.calendar, ctx, "deleting an event"), String(a.uid));
+      return cal.deleteEvent(await writableCalendar(a.calendar, ctx, "deleting an event"), String(a.uid), a.href);
     },
   },
 ];

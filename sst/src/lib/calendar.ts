@@ -252,26 +252,53 @@ export async function listEvents(src: CalendarSource, args: ListArgs): Promise<C
   return finish(all, args);
 }
 
-async function findObject(src: CalendarSource, uid: string) {
+/**
+ * Locate the object holding `uid`. iCloud answers a UID prop-filter REPORT with 412, so the
+ * order is: the href the caller already has → the `<uid>.ics` name we create ourselves →
+ * a UID filter (works on most other servers) → a plain time-range scan, which every server
+ * accepts.
+ */
+async function findObject(src: CalendarSource, uid: string, href?: string) {
   const { headers } = auth(src);
+  const calendar = collection(src);
+  const holds = (o: { data?: unknown }) => typeof o.data === "string" && new RegExp(`^UID:\\s*${uid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(o.data.replace(/\r?\n[ \t]/g, ""));
+  const byUrls = async (urls: string[]) => {
+    const objects = await fetchCalendarObjects({ calendar, headers, objectUrls: urls }).catch(() => []);
+    return objects.find(holds);
+  };
+  const done = (object: { url: string; data?: unknown; etag?: string }) => ({ object: object as { url: string; data: string; etag?: string }, headers });
+
+  if (href) {
+    const hit = await byUrls([href]);
+    if (hit) return done(hit);
+  }
+  const guessed = await byUrls([`${src.calendarUrl}${encodeURIComponent(uid)}.ics`]);
+  if (guessed) return done(guessed);
+
+  try {
+    const objects = await fetchCalendarObjects({
+      calendar,
+      headers,
+      filters: [{ "comp-filter": { _attributes: { name: "VCALENDAR" }, "comp-filter": { _attributes: { name: "VEVENT" }, "prop-filter": { _attributes: { name: "UID" }, "text-match": { _text: uid } } } } }],
+    });
+    const hit = objects.find(holds);
+    if (hit) return done(hit);
+  } catch {
+    // iCloud: 412 — fall through to the scan
+  }
+
+  const now = Date.now();
   const objects = await fetchCalendarObjects({
-    calendar: collection(src),
+    calendar,
     headers,
-    filters: [
-      {
-        "comp-filter": {
-          _attributes: { name: "VCALENDAR" },
-          "comp-filter": { _attributes: { name: "VEVENT" }, "prop-filter": { _attributes: { name: "UID" }, "text-match": { _attributes: { collation: "i;octet" }, _text: uid } } },
-        },
-      },
-    ],
+    timeRange: { start: new Date(now - 400 * 86400000).toISOString(), end: new Date(now + 800 * 86400000).toISOString() },
   });
-  const hit = objects.find((o) => typeof o.data === "string" && o.data.includes(`UID:${uid}`)) ?? objects[0];
-  if (!hit || typeof hit.data !== "string") throw new Error(`No event with uid ${uid} in "${src.label}".`);
-  return { object: hit, headers };
+  const hit = objects.find(holds);
+  if (!hit) throw new Error(`No event with uid ${uid} in "${src.label}" (looked from a year back to two years ahead).`);
+  return done(hit);
 }
 
-export async function getEvent(src: CalendarSource, uid: string): Promise<CalendarEvent> {
+export async function getEvent(src: CalendarSource, uid: string, href?: string): Promise<CalendarEvent> {
   if (src.kind === "ics") {
     const root = new ICAL.Component(ICAL.parse(await fetchFeed(src)));
     registerZones(root);
@@ -280,7 +307,7 @@ export async function getEvent(src: CalendarSource, uid: string): Promise<Calend
     const ev = new ICAL.Event(v, { strictExceptions: false });
     return toEvent(ev, ev.startDate, ev.endDate ?? ev.startDate, {});
   }
-  const { object } = await findObject(src, uid);
+  const { object } = await findObject(src, uid, href);
   const ev = eventFromIcs(object.data, { href: object.url, etag: object.etag });
   if (!ev) throw new Error(`Object for uid ${uid} contains no event.`);
   return ev;
@@ -465,8 +492,8 @@ export async function createEvent(src: CalendarSource, input: EventInput): Promi
   return created!;
 }
 
-export async function updateEvent(src: CalendarSource, uid: string, input: EventInput): Promise<CalendarEvent> {
-  const { object, headers } = await findObject(src, uid);
+export async function updateEvent(src: CalendarSource, uid: string, input: EventInput, href?: string): Promise<CalendarEvent> {
+  const { object, headers } = await findObject(src, uid, href);
   const existing = eventFromIcs(object.data, { href: object.url, etag: object.etag });
   const root = new ICAL.Component(ICAL.parse(object.data));
   registerZones(root);
@@ -483,8 +510,8 @@ export async function updateEvent(src: CalendarSource, uid: string, input: Event
   return eventFromIcs(ics, { href: object.url, etag: res.headers.get("etag") ?? undefined })!;
 }
 
-export async function deleteEvent(src: CalendarSource, uid: string): Promise<{ uid: string; summary: string; deleted: true }> {
-  const { object, headers } = await findObject(src, uid);
+export async function deleteEvent(src: CalendarSource, uid: string, href?: string): Promise<{ uid: string; summary: string; deleted: true }> {
+  const { object, headers } = await findObject(src, uid, href);
   const ev = eventFromIcs(object.data);
   const res = await deleteCalendarObject({ calendarObject: { url: object.url, etag: object.etag }, headers });
   if (!res.ok && res.status !== 404) throw new Error(`The calendar server refused the delete (${res.status} ${res.statusText}).`);

@@ -7,7 +7,7 @@ export default $config({
     return {
       name: PROJECT,
       removal: input?.stage === "production" ? "retain" : "remove",
-      protect: input?.stage === "production",
+      //protect: input?.stage === "production",
       home: "aws",
       providers: {
         aws: {
