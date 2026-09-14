@@ -50,13 +50,21 @@ export function security(app: Hono<Env>) {
   app.use("*", async (c, next) => {
     const method = c.req.method;
     const path = new URL(c.req.url).pathname;
-    const exempt = path === "/mcp" || path.startsWith("/oauth/token") || path.startsWith("/oauth/register") || path.startsWith("/.well-known/");
+    // /oauth/authorize's POST only starts a Cognito sign-in for a client the consent page
+    // already named; MCP clients open that page in popups and embedded views whose Origin
+    // is unpredictable, and a forged POST buys nothing a plain link to the GET would not.
+    const exempt =
+      path === "/mcp" || path === "/oauth/authorize" || path.startsWith("/oauth/token") || path.startsWith("/oauth/register") || path.startsWith("/.well-known/");
     if (method === "GET" || method === "HEAD" || method === "OPTIONS" || exempt) return next();
 
+    const refuse = (why: string) => {
+      console.log(JSON.stringify({ type: "csrf", why, path, origin: c.req.header("origin"), site: c.req.header("sec-fetch-site"), expected: origin(c), ua: c.req.header("user-agent")?.slice(0, 80) }));
+      return c.text(`${why} request refused.`, 403);
+    };
     const site = c.req.header("sec-fetch-site");
-    if (site && site !== "same-origin" && site !== "none") return c.text("Cross-site request refused.", 403);
+    if (site && site !== "same-origin" && site !== "none") return refuse("Cross-site");
     const from = c.req.header("origin");
-    if (from && from !== origin(c)) return c.text("Cross-origin request refused.", 403);
+    if (from && from !== origin(c)) return refuse("Cross-origin");
     if (path.startsWith("/api/") && c.req.header("x-requested-with") !== "fetch") return c.json({ error: "Missing request header." }, 403);
     return next();
   });

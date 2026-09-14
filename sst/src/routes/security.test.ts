@@ -10,6 +10,7 @@ function build() {
   app.post("/api/x", (c) => c.json({ ok: true }));
   app.post("/login", (c) => c.text("ok"));
   app.post("/mcp", (c) => c.text("ok"));
+  app.post("/oauth/authorize", (c) => c.text("ok"));
   app.get("/", (c) => c.html(`<script nonce="${c.get("nonce")}">1</script>`));
   return app;
 }
@@ -34,6 +35,7 @@ test("JSON API additionally requires the custom header", async () => {
 test("machine endpoints are exempt from the browser CSRF rules", async () => {
   const app = build();
   assert.equal((await app.request(req("/mcp", { origin: "https://claude.ai" }))).status, 200);
+  assert.equal((await app.request(req("/oauth/authorize", { origin: "null", "sec-fetch-site": "cross-site" }))).status, 200);
 });
 
 test("security headers and a per-request nonce", async () => {

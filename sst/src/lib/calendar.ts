@@ -87,7 +87,7 @@ export async function discoverCalendars(input: { serverUrl: string; username: st
     const name = r.props?.displayname?._cdata ?? r.props?.displayname;
     out.push({
       url: new URL(r.href ?? "", account.rootUrl ?? input.serverUrl).href,
-      name: typeof name === "string" && name ? name : "(unnamed)",
+      name: typeof name === "string" && name ? decodeXml(name) : "(unnamed)",
       color: typeof r.props?.calendarColor === "string" ? r.props.calendarColor : undefined,
       readOnly: !canWrite || subscribed,
       subscribed,
@@ -96,6 +96,13 @@ export async function discoverCalendars(input: { serverUrl: string; username: st
   }
   if (!out.length) throw new Error("Signed in, but no calendars were found on this account.");
   return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** tsdav hands display names through with XML entities intact ("Sports &amp; Activity"). */
+function decodeXml(v: string): string {
+  return v.replace(/&(amp|lt|gt|quot|apos|#(\d+)|#x([0-9a-f]+));/gi, (m, name, dec, hex) =>
+    dec ? String.fromCodePoint(+dec) : hex ? String.fromCodePoint(parseInt(hex, 16)) : ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[name.toLowerCase()] ?? m,
+  );
 }
 
 function collection(src: CalendarSource): DAVCalendar {
