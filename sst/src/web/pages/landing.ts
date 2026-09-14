@@ -13,7 +13,7 @@ export const landingPage = (nonce: string, signedIn?: { name: string; email: str
     <p>WebMail / Private Office MCP connects Claude to the mailboxes and calendars <em>you</em> choose. It can read, search, file, draft and plan.
        It can never send a mail on its own, and any account can be kept strictly read-only.</p>
     <div class="row">
-      ${signedIn ? `<a class="btn primary" href="/app">Open my mail</a>` : `<a class="btn primary" href="/login">Sign in</a>`}
+      ${signedIn ? `<a class="btn primary" href="/app">Open my office</a>` : `<a class="btn primary" href="/login">Sign in</a>`}
       <a class="btn" href="/docs">Manual</a><a class="btn" href="/support">Support</a>
     </div>
   </section>

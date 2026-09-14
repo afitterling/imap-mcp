@@ -3,14 +3,14 @@ import type { PublicUser } from "../../lib/users.js";
 
 export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
   page({
-    title: "My mail",
+    title: "My office",
     nonce,
     user,
     active: "app",
     wide: true,
     body: `<div class="wrap wide">
   <div class="row between">
-    <div><h1>My mail</h1><p class="lead mb0">Mailboxes Claude can reach as you, and everything it has done with them.</p></div>
+    <div><h1>My office</h1><p class="lead mb0">Mailboxes and calendars Claude can reach as you, and everything it has done with them.</p></div>
     <div class="row"><button class="primary" id="addAcct">Add mail account</button><button id="addCal">Add calendar</button></div>
   </div>
 

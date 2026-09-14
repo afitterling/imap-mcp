@@ -66,11 +66,10 @@ export function security(app: Hono<Env>) {
     const site = c.req.header("sec-fetch-site");
     if (site) {
       if (site !== "same-origin" && site !== "none") return refuse("Cross-site");
-      return next();
+    } else {
+      const from = c.req.header("origin");
+      if (from && from !== origin(c)) return refuse("Cross-origin");
     }
-    const from = c.req.header("origin");
-    if (from && from !== "null" && from !== origin(c)) return refuse("Cross-origin");
-    if (from === "null") return refuse("Cross-origin");
     if (path.startsWith("/api/") && c.req.header("x-requested-with") !== "fetch") return c.json({ error: "Missing request header." }, 403);
     return next();
   });

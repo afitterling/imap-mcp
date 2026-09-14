@@ -154,7 +154,7 @@ export const CSS = `
 export function page(o: PageOpts): string {
   const nav = o.user
     ? `<nav class="nav">
-        <a href="/app" class="${o.active === "app" ? "cur" : ""}">My mail</a>
+        <a href="/app" class="${o.active === "app" ? "cur" : ""}">My office</a>
         <a href="/docs" class="${o.active === "docs" ? "cur" : ""}">Manual</a>
         <a href="/support" class="${o.active === "support" ? "cur" : ""}">Support</a>
         <span class="who" title="${esc(o.user.email)}">${esc(o.user.name)}</span>
