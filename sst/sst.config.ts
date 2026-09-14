@@ -34,7 +34,12 @@ export default $config({
       triggers: { preSignUp: preSignUp.arn },
       domain: { prefix: `${PROJECT}-${$app.stage}` },
       transform: {
-        userPool: (args) => {
+        userPool: (args, opts) => {
+          // Cognito cannot change attribute schemas in place; a schema change must recreate the
+          // pool (users then sign up again; the app re-keys their data by e-mail). Production has
+          // deletion protection, so this can never fire there by accident.
+          opts.replaceOnChanges = ["schemas"];
+          opts.deleteBeforeReplace = true;
           args.passwordPolicy = {
             minimumLength: 12,
             requireLowercase: true,
@@ -47,7 +52,7 @@ export default $config({
           args.deletionProtection = $app.stage === "production" ? "ACTIVE" : "INACTIVE";
           args.schemas = [
             { name: "email", attributeDataType: "String", required: true, mutable: true, stringAttributeConstraints: { minLength: "3", maxLength: "254" } },
-            { name: "name", attributeDataType: "String", required: false, mutable: true, stringAttributeConstraints: { minLength: "0", maxLength: "80" } },
+            { name: "name", attributeDataType: "String", required: false, mutable: true, stringAttributeConstraints: { minLength: "0", maxLength: "100" } },
           ];
         },
       },
