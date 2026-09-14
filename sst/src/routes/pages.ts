@@ -7,7 +7,7 @@ import { authPage } from "../web/pages/login.js";
 import { appPage } from "../web/pages/app.js";
 import { readSession, createSession, destroySession, getSigned, type Signed } from "../lib/sessions.js";
 import { upsertFromClaims, publicUser } from "../lib/users.js";
-import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl } from "../lib/cognito.js";
+import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl, userStatus } from "../lib/cognito.js";
 import { getClient, createGrant, issueCode } from "../lib/oauth.js";
 import { hit, LIMITS } from "../lib/ratelimit.js";
 import { audit, ANONYMOUS } from "../lib/audit.js";
@@ -63,6 +63,21 @@ pages.get("/auth/callback", async (c) => {
     console.error("[auth] callback failed:", err);
     await audit({ userId: ANONYMOUS, kind: "auth", action: "auth.login", outcome: "failure", details: { reason: "token-exchange" }, ip: ip(c), ua: ua(c) });
     return fail("Sign-in could not be verified. Please start again.", 401);
+  }
+
+  // Cognito's auto sign-in right after e-mail confirmation skips MFA setup; MFA is only
+  // enforced from the next sign-in on. Never open a session without a registered second factor:
+  // end the Cognito session and send the person back through sign-in, where setup is forced.
+  const cognito = await userStatus(claims.email);
+  if (!cognito?.mfa.length) {
+    await audit({ userId: claims.sub, kind: "auth", action: "auth.login", outcome: "denied", target: claims.email, details: { reason: "mfa-not-set-up" }, ip: ip(c), ua: ua(c) });
+    return c.html(
+      authPage(nonce, {
+        error: "Your account has no authenticator app yet. Sign in once more — you will be asked to set it up before you get in.",
+        continueHref: await logoutUrl(`${origin(c)}/login`),
+      }),
+      403,
+    );
   }
 
   const { user, created } = await upsertFromClaims(claims);

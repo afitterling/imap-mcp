@@ -128,7 +128,7 @@ export default $config({
           args.allowedOauthFlows = ["code"];
           args.allowedOauthScopes = ["openid", "email", "profile"];
           args.generateSecret = true;
-          args.logoutUrls = [server.url];
+          args.logoutUrls = [server.url, $interpolate`${server.url}login`];
           args.supportedIdentityProviders = ["COGNITO"];
           args.preventUserExistenceErrors = "ENABLED";
           args.enableTokenRevocation = true;
