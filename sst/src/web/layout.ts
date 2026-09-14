@@ -13,7 +13,7 @@ export function json(v: unknown): string {
   return JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
-export type NavUser = { name: string; email: string; role: "admin" | "user" };
+export type NavUser = { name: string; email: string };
 
 export type PageOpts = {
   title: string;
@@ -23,7 +23,7 @@ export type PageOpts = {
   /** Signed-in header with app navigation; omitted on public pages. */
   user?: NavUser;
   /** Which nav item is current. */
-  active?: "app" | "admin" | "support" | "docs" | "home";
+  active?: "app" | "support" | "docs" | "home";
   wide?: boolean;
   description?: string;
 };
@@ -155,7 +155,6 @@ export function page(o: PageOpts): string {
   const nav = o.user
     ? `<nav class="nav">
         <a href="/app" class="${o.active === "app" ? "cur" : ""}">My mail</a>
-        ${o.user.role === "admin" ? `<a href="/admin" class="${o.active === "admin" ? "cur" : ""}">Admin</a>` : ""}
         <a href="/docs" class="${o.active === "docs" ? "cur" : ""}">Manual</a>
         <a href="/support" class="${o.active === "support" ? "cur" : ""}">Support</a>
         <span class="who" title="${esc(o.user.email)}">${esc(o.user.name)}</span>

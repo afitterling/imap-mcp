@@ -6,8 +6,7 @@ import { mcp } from "./routes/mcp.js";
 import { oauth } from "./routes/oauth.js";
 import { pages } from "./routes/pages.js";
 import { api } from "./routes/api.js";
-import { admin } from "./routes/admin.js";
-import { Unauthorized, Forbidden } from "./lib/sessions.js";
+import { Unauthorized } from "./lib/sessions.js";
 import { RateLimited } from "./lib/ratelimit.js";
 
 const app = new Hono<Env>();
@@ -15,7 +14,6 @@ const app = new Hono<Env>();
 security(app);
 app.route("/", mcp);
 app.route("/", oauth);
-app.route("/api/admin", admin);
 app.route("/api", api);
 app.route("/", pages);
 
@@ -25,7 +23,6 @@ app.onError((err, c) => {
   const path = new URL(c.req.url).pathname;
   const wantsJson = path.startsWith("/api/") || path === "/mcp";
   if (err instanceof Unauthorized) return wantsJson ? c.json({ error: err.message }, 401) : c.redirect("/login");
-  if (err instanceof Forbidden) return wantsJson ? c.json({ error: err.message }, 403) : c.redirect("/app");
   if (err instanceof RateLimited) return wantsJson ? c.json({ error: err.message }, 429) : c.text(err.message, 429);
   if (err instanceof HttpError) return wantsJson ? c.json({ error: err.message }, err.status as any) : c.text(err.message, err.status as any);
   // Anything else: log the detail, tell the client only that it failed.

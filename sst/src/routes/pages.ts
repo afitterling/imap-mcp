@@ -5,26 +5,24 @@ import { supportPage } from "../web/pages/support.js";
 import { docsPage } from "../web/pages/docs.js";
 import { authPage } from "../web/pages/login.js";
 import { appPage } from "../web/pages/app.js";
-import { adminPage } from "../web/pages/admin.js";
-import { getSupportContact } from "../lib/settings.js";
 import { readSession, createSession, destroySession, getSigned, type Signed } from "../lib/sessions.js";
 import { upsertFromClaims, publicUser } from "../lib/users.js";
 import { beginLogin, takeLoginState, exchangeCode, verifyIdToken, logoutUrl } from "../lib/cognito.js";
 import { getClient, createGrant, issueCode } from "../lib/oauth.js";
 import { hit, LIMITS } from "../lib/ratelimit.js";
 import { audit, ANONYMOUS } from "../lib/audit.js";
-import { alertUser, alertAdmins, requestContext } from "../lib/notify.js";
+import { alertUser, alertEveryone, requestContext } from "../lib/notify.js";
 import { claimOrphanAccounts } from "../lib/store.js";
 
 export const pages = new Hono<Env>();
 
-const nav = (s: Signed | undefined) => (s ? { name: s.user.name, email: s.user.email, role: s.user.role } : undefined);
+const nav = (s: Signed | undefined) => (s ? { name: s.user.name, email: s.user.email } : undefined);
 export const callbackUri = (c: any) => `${origin(c)}/auth/callback`;
 
 /* ------------------------------- public ------------------------------- */
 
 pages.get("/", async (c) => c.html(landingPage(c.get("nonce"), nav(await getSigned(c)))));
-pages.get("/support", async (c) => c.html(supportPage(c.get("nonce"), await getSupportContact(), nav(await getSigned(c)))));
+pages.get("/support", async (c) => c.html(supportPage(c.get("nonce"), nav(await getSigned(c)))));
 pages.get("/docs", async (c) => c.html(docsPage(c.get("nonce"), nav(await getSigned(c)))));
 pages.get("/health", (c) => c.json({ ok: true, service: "webmail-mcp" }));
 pages.get("/admin/login", (c) => c.redirect("/login"));
@@ -73,12 +71,11 @@ pages.get("/auth/callback", async (c) => {
     return fail("This account has been disabled by an administrator.", 403);
   }
   if (created) {
-    await audit({ userId: user.userId, kind: "auth", action: "auth.signup.complete", outcome: "success", details: { role: user.role }, ip: ip(c), ua: ua(c) });
-    if (user.role === "admin") {
-      const claimed = await claimOrphanAccounts(user.userId);
-      if (claimed) await audit({ userId: user.userId, kind: "account", action: "account.claim-orphans", outcome: "success", details: { count: claimed } });
-    }
-    await alertAdmins({ title: `New user: ${user.email}`, outcome: "success", details: { ...requestContext(c), Name: user.name, Role: user.role } });
+    await audit({ userId: user.userId, kind: "auth", action: "auth.signup.complete", outcome: "success", ip: ip(c), ua: ua(c) });
+    // Accounts from before ownership existed go to whoever signs up first.
+    const claimed = await claimOrphanAccounts(user.userId);
+    if (claimed) await audit({ userId: user.userId, kind: "account", action: "account.claim-orphans", outcome: "success", details: { count: claimed } });
+    await alertEveryone({ title: `New user: ${user.email}`, outcome: "success", details: { ...requestContext(c), Name: user.name } });
   }
 
   // MCP OAuth consent: the user is authenticated, so mint the grant and send the client its code.
@@ -123,9 +120,4 @@ pages.get("/app", async (c) => {
   return c.html(appPage(c.get("nonce"), publicUser(s.user), `${origin(c)}/mcp`));
 });
 
-pages.get("/admin", async (c) => {
-  const s = await getSigned(c);
-  if (!s) return c.redirect("/login?next=/admin");
-  if (s.user.role !== "admin") return c.redirect("/app");
-  return c.html(adminPage(c.get("nonce"), publicUser(s.user)));
-});
+pages.get("/admin", (c) => c.redirect("/app"));

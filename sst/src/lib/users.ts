@@ -1,24 +1,23 @@
 import { GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
 import { doc } from "./db.js";
-import { normalizeEmail, ADMIN_EMAIL } from "./allowlist.js";
+import { normalizeEmail } from "./allowlist.js";
 import type { IdClaims } from "./cognito.js";
 
 const TABLE = () => Resource.Users.name;
 
-export type Role = "admin" | "user";
 export type UserStatus = "active" | "disabled";
 
 /**
  * Local profile of a Cognito user. Cognito owns credentials and MFA; this row owns what
- * the app needs per request (role, status, session version) and what admins list.
+ * the app needs per request (status, session version) and what the Users page lists.
+ * There are no roles: every allowlisted person has the same rights.
  */
 export type User = {
   /** The Cognito `sub` — the only user id ever trusted. */
   userId: string;
   email: string;
   name: string;
-  role: Role;
   status: UserStatus;
   /** Bumping this invalidates every session the user has. */
   sessionVersion: number;
@@ -52,9 +51,6 @@ export async function listUsers(): Promise<User[]> {
   return ((res.Items ?? []) as User[]).sort((a, b) => a.email.localeCompare(b.email));
 }
 
-export function isAdminEmail(email: string): boolean {
-  return normalizeEmail(email) === normalizeEmail(ADMIN_EMAIL);
-}
 
 /** Called after every verified sign-in: creates the profile on first login, refreshes it afterwards. */
 export async function upsertFromClaims(claims: IdClaims): Promise<{ user: User; created: boolean }> {
@@ -70,7 +66,6 @@ export async function upsertFromClaims(claims: IdClaims): Promise<{ user: User; 
     userId: claims.sub,
     email: claims.email,
     name: (claims.name ?? claims.email.split("@")[0]).slice(0, 80),
-    role: isAdminEmail(claims.email) ? "admin" : "user",
     status: "active",
     sessionVersion: 1,
     createdAt: now,

@@ -1,8 +1,7 @@
 import { page, esc } from "../layout.js";
-import type { SupportContact } from "../../lib/settings.js";
 import { ALLOWED_EMAILS } from "../../lib/allowlist.js";
 
-export const supportPage = (nonce: string, contact: SupportContact, signedIn?: { name: string; email: string; role: "admin" | "user" }) =>
+export const supportPage = (nonce: string, signedIn?: { name: string; email: string }) =>
   page({
     title: "Support",
     nonce,
@@ -19,7 +18,7 @@ export const supportPage = (nonce: string, contact: SupportContact, signedIn?: {
 
     <details><summary>Where do I change my password or my authenticator?</summary>
       <p>Sign-in is handled by Amazon Cognito. To change your password, sign out and use <b>Forgot your password?</b> on the sign-in page (a code is mailed to you).
-      If you lost your authenticator app, an administrator can reset it under Admin → Users; you set up a new one at your next sign-in.</p></details>
+      If you lost your authenticator app, the operator resets it on the command line (see the manual); you set up a new one at your next sign-in.</p></details>
 
     <details><summary>Connecting Claude Code</summary>
       <p>Sign in, open <b>Connect Claude</b>, create a token and run the command shown. The token is displayed once; if you lose it, revoke it and create another.</p>
@@ -55,7 +54,7 @@ export const supportPage = (nonce: string, contact: SupportContact, signedIn?: {
       Queued mail expires after 7 days. The toggle above the Outbox lets you allow direct sending; it is off by default and every change is logged.</p></details>
 
     <details><summary>I lost my phone / authenticator</summary>
-      <p>Ask an administrator to reset your two-factor setup (Admin → Users → Reset 2FA). This also signs you out everywhere and revokes tokens and connected apps; at your next sign-in Cognito walks you through setting up a new authenticator.</p></details>
+      <p>Ask the operator to reset your two-factor setup on the command line (<code>npm run user -- reset-mfa you@example.com --stage …</code>). This also signs you out everywhere and revokes tokens and connected apps; at your next sign-in Cognito walks you through setting up a new authenticator.</p></details>
 
     <details><summary>Revoking access</summary>
       <p><b>Connect Claude</b> lists your tokens and connected apps; revoke any of them and it stops working immediately. <b>Security → Sessions</b> shows every browser signed in as you,
@@ -66,14 +65,13 @@ export const supportPage = (nonce: string, contact: SupportContact, signedIn?: {
 
     <details><summary>What is logged?</summary>
       <p>Sign-ins (successful and failed), second-factor use, token and app changes, mail-account changes, Outbox decisions and every tool call Claude makes
-      (tool name, account, folder/uid/recipients/subject — never message bodies or attachments). You see your own log under <b>Activity</b>; administrators see everyone's.
+      (tool name, account, folder/uid/recipients/subject — never message bodies or attachments). You see your own log under <b>Activity</b>; nobody sees anyone else's.
       Entries are kept for one year.</p></details>
   </div>
 
-  <h2>Contact</h2>
+  <h2>Operations</h2>
   <div class="card">
-    ${contact.email ? `<p class="mb0">Operator: <a href="mailto:${esc(contact.email)}">${esc(contact.email)}</a></p>` : `<p class="mb0 muted">The operator has not published a contact address yet.</p>`}
-    ${contact.note ? `<p class="muted small">${esc(contact.note)}</p>` : ""}
+    <p class="mb0">There is no administrator role. Resetting a lost authenticator or disabling an account is done on the command line by whoever operates the deployment — see the <a href="/docs#ops">manual</a>.</p>
     <p class="muted small mb0">Service status: <a href="/health">/health</a></p>
   </div>
   <footer><span>Private Office MCP</span><a href="/">Home</a><a href="/docs">Manual</a><a href="/health">Status</a></footer>

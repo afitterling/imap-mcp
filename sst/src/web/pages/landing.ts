@@ -1,6 +1,6 @@
 import { page } from "../layout.js";
 
-export const landingPage = (nonce: string, signedIn?: { name: string; email: string; role: "admin" | "user" }) =>
+export const landingPage = (nonce: string, signedIn?: { name: string; email: string }) =>
   page({
     title: "Mail and calendars for Claude",
     description: "Private Office MCP lets Claude read, search, draft and plan in your own mailboxes and calendars — with every send held for your approval.",

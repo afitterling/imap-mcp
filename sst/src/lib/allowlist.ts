@@ -4,9 +4,6 @@
  */
 export const ALLOWED_EMAILS: readonly string[] = ["afitterling@icloud.com", "michael.meyer@mindyourstep.de"];
 
-/** The first allowlisted address is the administrator. */
-export const ADMIN_EMAIL = ALLOWED_EMAILS[0];
-
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }

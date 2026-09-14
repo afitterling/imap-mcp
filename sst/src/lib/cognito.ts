@@ -3,10 +3,7 @@ import {
   CognitoIdentityProviderClient,
   ListUserPoolClientsCommand,
   DescribeUserPoolClientCommand,
-  AdminDisableUserCommand,
-  AdminEnableUserCommand,
   AdminUserGlobalSignOutCommand,
-  AdminSetUserMFAPreferenceCommand,
   AdminGetUserCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { createHash, randomBytes } from "node:crypto";
@@ -136,25 +133,15 @@ export async function logoutUrl(redirectTo: string): Promise<string> {
   return url.toString();
 }
 
-/* --------------------------------- admin --------------------------------- */
+/* ------------------------------ self-service ------------------------------ */
 
 const username = (email: string) => email; // usernames: ["email"] → the e-mail is the username
 
-export const adminDisableUser = (email: string) => idp.send(new AdminDisableUserCommand({ UserPoolId: POOL_ID(), Username: username(email) }));
-export const adminEnableUser = (email: string) => idp.send(new AdminEnableUserCommand({ UserPoolId: POOL_ID(), Username: username(email) }));
-export const adminGlobalSignOut = (email: string) => idp.send(new AdminUserGlobalSignOutCommand({ UserPoolId: POOL_ID(), Username: username(email) }));
+/** "Sign out everywhere": revokes the user's own Cognito sessions and refresh tokens. */
+export const globalSignOut = (email: string) => idp.send(new AdminUserGlobalSignOutCommand({ UserPoolId: POOL_ID(), Username: username(email) }));
 
-/** Clears the MFA preference; with the pool's MFA set to ON, Cognito forces a fresh setup at next sign-in. */
-export const adminResetMfa = (email: string) =>
-  idp.send(
-    new AdminSetUserMFAPreferenceCommand({
-      UserPoolId: POOL_ID(),
-      Username: username(email),
-      SoftwareTokenMfaSettings: { Enabled: false, PreferredMfa: false },
-    }),
-  );
-
-export async function adminUserStatus(email: string): Promise<{ enabled: boolean; status?: string; mfa: string[] } | undefined> {
+/** The user's own Cognito state, for the Security tab. */
+export async function userStatus(email: string): Promise<{ enabled: boolean; status?: string; mfa: string[] } | undefined> {
   try {
     const u = await idp.send(new AdminGetUserCommand({ UserPoolId: POOL_ID(), Username: username(email) }));
     return { enabled: u.Enabled !== false, status: u.UserStatus, mfa: (u.UserMFASettingList ?? []).map((m) => (m === "SOFTWARE_TOKEN_MFA" ? "totp" : m === "SMS_MFA" ? "sms" : m)) };

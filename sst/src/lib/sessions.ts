@@ -123,21 +123,10 @@ export async function requireSigned(c: Context): Promise<Signed> {
   return s;
 }
 
-export async function requireAdmin(c: Context): Promise<Signed> {
-  const s = await requireSigned(c);
-  if (s.user.role !== "admin") throw new Forbidden();
-  return s;
-}
 
 export class Unauthorized extends Error {
   status = 401 as const;
   constructor() {
     super("Please sign in.");
-  }
-}
-export class Forbidden extends Error {
-  status = 403 as const;
-  constructor() {
-    super("Administrators only.");
   }
 }

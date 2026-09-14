@@ -112,15 +112,8 @@ export default $config({
       environment: { COGNITO_USER_POOL_ID: auth.id, COGNITO_DOMAIN: auth.domainUrl!, COGNITO_REGION: "eu-central-1" },
       permissions: [
         {
-          actions: [
-            "cognito-idp:ListUserPoolClients",
-            "cognito-idp:DescribeUserPoolClient",
-            "cognito-idp:AdminGetUser",
-            "cognito-idp:AdminDisableUser",
-            "cognito-idp:AdminEnableUser",
-            "cognito-idp:AdminUserGlobalSignOut",
-            "cognito-idp:AdminSetUserMFAPreference",
-          ],
+          // Only what the app does for the signed-in user itself; operator actions live in scripts/user.ts.
+          actions: ["cognito-idp:ListUserPoolClients", "cognito-idp:DescribeUserPoolClient", "cognito-idp:AdminGetUser", "cognito-idp:AdminUserGlobalSignOut"],
           resources: [auth.arn],
         },
       ],

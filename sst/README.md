@@ -33,8 +33,8 @@ Browser ──session cookie──> /app,/admin ┘                 ├─ Accou
 | `src/routes/security.ts` | CSP with per-request nonce, HSTS, CSRF guard, body limits |
 | `src/routes/pages.ts` | Landing, support, docs, `/login` → Cognito, `/auth/callback`, `/app`, `/admin` |
 | `src/lib/cognito.ts`, `src/triggers/pre-signup.ts` | PKCE/state, token exchange + JWT validation, admin calls; allowlist trigger |
-| `src/routes/api.ts` | User JSON API: accounts, outbox, tokens, apps, sessions, activity, security |
-| `src/routes/admin.ts` | Admin JSON API: users, everyone's activity, settings |
+| `src/routes/api.ts` | User JSON API: accounts, calendars, outbox, tokens, apps, sessions, activity |
+| `scripts/user.ts` | Operator CLI (no admin in the app): list, reset-mfa, signout, disable, enable |
 | `src/routes/oauth.ts` | OAuth 2.1 for MCP clients: registration, consent via Cognito, PKCE codes, tokens |
 | `src/routes/mcp.ts` | Resolves the bearer token to a user and hands off to the RPC layer |
 | `src/mcp/` | JSON-RPC over Streamable HTTP (stateless), tool definitions, read-only gate |
@@ -48,8 +48,8 @@ Authentication is **Amazon Cognito** (`sst.aws.CognitoUserPool("Auth")`, managed
 Cognito prefix domain, authorization code + PKCE). The app never handles a password.
 
 - **Who can sign up:** the addresses in `src/lib/allowlist.ts`, enforced by the Pre-Sign-Up
-  trigger `src/triggers/pre-signup.ts` — Cognito refuses everyone else. The first address is
-  `admin`; everyone else is `user` (role assigned in the app on first sign-in).
+  trigger `src/triggers/pre-signup.ts` — Cognito refuses everyone else. There are no roles: every
+  allowlisted person has the same rights, including the Users page for mutual rescue.
 - **Pool policy:** email as username, verified by Cognito; password ≥ 12 chars with upper,
   lower, digit and symbol; **MFA `on`** with software token (authenticator app) — Cognito
   forces setup at the first sign-in; account recovery by verified e-mail; Cognito's own
@@ -61,11 +61,14 @@ Cognito prefix domain, authorization code + PKCE). The app never handles a passw
   session (`__Host-` cookie, UA-bound, 1 h idle / 12 h absolute).
 - **Sign out** clears the session and sends the browser through Cognito's `/logout`;
   "sign out everywhere" bumps the session version and calls `AdminUserGlobalSignOut`.
-- **Admins** can disable/enable (mirrored to Cognito), change roles, reset MFA
-  (`AdminSetUserMFAPreference` — Cognito re-prompts setup) and sign a user out everywhere.
+- **No admin.** Every setting is per user and self-service. The rare operator actions —
+  list users, reset a lost authenticator, sign out, disable/enable — are a CLI:
+  `npm run user -- <list|reset-mfa|signout|disable|enable> [email] --stage <stage>`
+  (`scripts/user.ts`, runs with your AWS credentials, not through the app).
 - The app client is created *after* the function (its callback is the function URL) and
-  found at runtime by name (`ListUserPoolClients`); the function gets only the seven
-  `cognito-idp` actions it uses, scoped to the pool ARN — no `cognito-idp:*` link.
+  found at runtime by name (`ListUserPoolClients`); the function gets only the four
+  `cognito-idp` actions it uses (client lookup, own status, own global sign-out), scoped
+  to the pool ARN — no `cognito-idp:*` link.
 
 ## Connecting Claude
 
@@ -131,8 +134,8 @@ Turning the hold off is logged and mails the user.
 CloudWatch Logs (function logging is JSON, 1-month retention, set in SST): sign-in/2FA/OAuth events, token and app changes,
 account and calendar changes, outbox decisions, admin actions and **every MCP tool call**
 (tool, account or calendar, folder/uid/recipients/subject or event title/time, outcome,
-duration, client — never bodies, notes or attachments). Users see their own log under **Activity** with filters and CSV export;
-admins see everyone's by day. Exports are themselves logged.
+duration, client — never bodies, notes or attachments). Users see their own log under **Activity** with filters and CSV export; there is no
+cross-user view. Exports are themselves logged.
 
 ## Security notes
 
@@ -169,6 +172,6 @@ are done.
    MFA is authenticator-app only; SMS MFA would need an SNS role with `sns:Publish` on `*`,
    which the project's IAM rule forbids.
 4. Deploy stage `alex` first. Sign up through the hosted UI as the admin: at the first
-   sign-in the existing production accounts (which have no owner) are claimed automatically.
+   sign-in by whoever is first, the existing production accounts (which have no owner) are claimed.
 5. Reconnect Claude Code with a personal token and claude.ai via the new consent screen;
    existing connectors keep a cached tool list until reconnected.

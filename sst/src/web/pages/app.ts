@@ -84,7 +84,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
         <select id="actKind" class="grow"><option value="">All kinds</option>
           <option value="auth">Sign-in</option><option value="mfa">Two-factor</option><option value="oauth">Connected apps</option>
           <option value="token">Tokens</option><option value="mcp">Claude mail tools</option><option value="calendar">Calendars &amp; calendar tools</option><option value="account">Mail accounts</option>
-          <option value="outbox">Outbox</option><option value="security">Security</option><option value="user">Profile</option></select>
+          <option value="outbox">Outbox</option><option value="security">Security</option><option value="user">Users</option></select>
         <input type="date" id="actFrom" class="grow"><input type="date" id="actTo" class="grow">
         <button id="actLoad">Filter</button><a class="btn" id="actCsv" href="/api/activity.csv">Export CSV</a>
       </div>
@@ -102,7 +102,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
         <div class="mt12"><b>Two-factor</b> <span id="mfaState" class="chip"></span></div>
         <ul class="small muted mt12">
           <li><b>Change password:</b> sign out, then use <i>Forgot your password?</i> on the sign-in page.</li>
-          <li><b>New phone / lost authenticator:</b> an administrator resets it under Admin → Users; you set it up again at your next sign-in.</li>
+          <li><b>New phone / lost authenticator:</b> the operator resets it on the command line (<a href="/docs#ops">manual</a>); you set it up again at your next sign-in.</li>
         </ul>
       </div>
       <div class="card">
