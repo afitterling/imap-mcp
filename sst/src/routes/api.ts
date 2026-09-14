@@ -40,18 +40,16 @@ api.get("/accounts", async (c) => {
   return c.json((await listAccounts(s.user.userId)).map(redact));
 });
 
-api.post("/accounts", async (c) => {
-  const s = await requireSigned(c);
-  const b = await jsonBody(c);
+/** The account the form describes; passwords fall back to the stored ones when editing. */
+async function accountFromForm(b: any, ownerId: string) {
   const imapUser = String(b.imapUser || b.email || "").trim();
   const email = String(b.email ?? "").trim();
-  if (!email || !b.label || !b.imapHost || !b.smtpHost) throw bad("Label, email, IMAP host and SMTP host are required.");
-  const isNew = !b.accountId;
-  if (isNew && !b.imapPassword) throw bad("An IMAP password is required for a new account.");
-  const account = await putAccount({
+  if (!email || !b.imapHost || !b.smtpHost) throw bad("Email, IMAP host and SMTP host are required.");
+  const existing = b.accountId ? await getAccount(String(b.accountId), ownerId) : undefined;
+  return {
     accountId: String(b.accountId || "").trim() || randomUUID(),
-    ownerId: s.user.userId,
-    label: String(b.label).trim().slice(0, 60),
+    ownerId,
+    label: String(b.label ?? "").trim().slice(0, 60),
     email,
     imap: { host: String(b.imapHost).trim(), port: Number(b.imapPort), secure: Number(b.imapPort) === 993, user: imapUser },
     smtp: {
@@ -64,7 +62,42 @@ api.post("/accounts", async (c) => {
     readOnly: b.readOnly === true,
     imapPassword: b.imapPassword || undefined,
     smtpPassword: b.smtpPassword || undefined,
-  });
+    existing,
+  };
+}
+
+/** Try the settings as typed, before anything is stored. */
+api.post("/accounts/test-form", async (c) => {
+  const s = await requireSigned(c);
+  const f = await accountFromForm(await jsonBody(c), s.user.userId);
+  if (!f.imapPassword && !f.existing?.imapPass) throw bad("Enter the IMAP password to test.");
+  const { encrypt } = await import("../lib/crypto.js");
+  const candidate = {
+    ...f,
+    createdAt: f.existing?.createdAt ?? "",
+    imapPass: f.imapPassword ? encrypt(f.imapPassword) : f.existing?.imapPass,
+    smtpPass: f.smtpPassword ? encrypt(f.smtpPassword) : f.imapPassword ? undefined : f.existing?.smtpPass,
+  };
+  try {
+    const r = await testAccount(candidate);
+    await audit({ ...who(c, s), kind: "account", action: "account.test", outcome: "success", target: f.label || f.email, details: { imap: f.imap.host, stored: false } });
+    return c.json(r);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await audit({ ...who(c, s), kind: "account", action: "account.test", outcome: "failure", target: f.label || f.email, details: { imap: f.imap.host, stored: false, error: message } });
+    throw new HttpError(502, message);
+  }
+});
+
+api.post("/accounts", async (c) => {
+  const s = await requireSigned(c);
+  const b = await jsonBody(c);
+  const f = await accountFromForm(b, s.user.userId);
+  if (!f.label) throw bad("Label is required.");
+  const isNew = !f.existing;
+  if (isNew && !f.imapPassword) throw bad("An IMAP password is required for a new account.");
+  const { existing: _e, ...input } = f;
+  const account = await putAccount(input);
   await audit({ ...who(c, s), kind: "account", action: isNew ? "account.create" : "account.update", outcome: "success", target: account.label, details: { email: account.email, imap: account.imap.host, readOnly: account.readOnly, passwordChanged: !!b.imapPassword } });
   return c.json(redact(account));
 });

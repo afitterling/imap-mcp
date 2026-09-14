@@ -157,7 +157,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
     <div class="hint">Ports 993 (IMAP) and 465 (SMTP) use implicit TLS. Port 587 is sent as STARTTLS automatically.</div>
     <div class="status" id="formStatus"></div>
   </div>
-  <div class="dlg-foot"><button type="button" class="ghost" id="dlgCancel">Cancel</button><button type="submit" class="primary" id="saveBtn">Save account</button></div>
+  <div class="dlg-foot"><button type="button" class="ghost" id="dlgCancel">Cancel</button><button type="button" id="testBtn">Test connection</button><button type="submit" class="primary" id="saveBtn">Save account</button></div>
 </form></dialog>
 
 <!-- calendar form -->
@@ -272,6 +272,13 @@ $('addAcct').addEventListener('click', openForm);
 $('dlgCancel').addEventListener('click', () => $('dlg').close());
 $('preset').addEventListener('change', () => { const p = PRESETS[$('preset').value]; if (!p) return;
   $('imapHost').value = p.imapHost; $('imapPort').value = p.imapPort; $('smtpHost').value = p.smtpHost; $('smtpPort').value = p.smtpPort; });
+$('testBtn').addEventListener('click', async () => {
+  status('formStatus', 'Testing IMAP and SMTP…'); $('testBtn').disabled = true;
+  const data = Object.fromEntries(new FormData($('form')));
+  try { const r = await api('/api/accounts/test-form', { method: 'POST', body: data }); status('formStatus', 'IMAP ' + r.imap + ' · SMTP ' + r.smtp, 'ok'); }
+  catch (err) { status('formStatus', err.message, 'bad'); }
+  $('testBtn').disabled = false;
+});
 $('form').addEventListener('submit', async (e) => {
   e.preventDefault(); status('formStatus', 'Saving…'); $('saveBtn').disabled = true;
   const data = Object.fromEntries(new FormData($('form'))); data.readOnly = $('readOnly').checked;
