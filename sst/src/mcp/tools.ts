@@ -1,15 +1,52 @@
-import { listAccounts, redact, resolveAccount } from "../lib/store.js";
+import { listAccounts, redact, resolveAccount, type Account } from "../lib/store.js";
 import * as mail from "../lib/mail.js";
 import { beautify } from "../lib/beautify.js";
-import { requireApproval, queueSend } from "../lib/outbox.js";
+import { queueSend } from "../lib/outbox.js";
+import { requireApproval } from "../lib/settings.js";
+import { listCalendars, resolveCalendar, redactCalendar, isReadOnly, type CalendarSource } from "../lib/calstore.js";
+import * as cal from "../lib/calendar.js";
 
-type Tool = {
+/** Who is calling, as established by the HTTP layer. Every tool is scoped to `userId`. */
+export type CallerContext = {
+  userId: string;
+  auth: "pat" | "oauth" | "cognito";
+  /** Token or grant id, for the audit trail. */
+  tokenId: string;
+  client?: string;
+  ip?: string;
+};
+
+export type Tool = {
   name: string;
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: any) => Promise<unknown>;
+  /** Changes mailbox state (or sends). Refused on read-only accounts. */
+  mutating: boolean;
+  destructive?: boolean;
+  handler: (args: any, ctx: CallerContext) => Promise<unknown>;
 };
+
+export class ReadOnlyError extends Error {
+  constructor(a: { label: string }, what: string, where = "Accounts → Read-only") {
+    super(`Account "${a.label}" is read-only: ${what} is not allowed. The user can lift this in the Private Office MCP app under ${where}.`);
+  }
+}
+
+/** Same gate for calendars; ICS feeds can never be written, whatever the switch says. */
+async function writableCalendar(ref: string, ctx: CallerContext, what: string): Promise<CalendarSource> {
+  const c = await resolveCalendar(ref, ctx.userId);
+  if (c.kind === "ics") throw new Error(`Calendar "${c.label}" is an ICS subscription and cannot be changed: ${what} is not possible.`);
+  if (isReadOnly(c)) throw new ReadOnlyError({ label: `Calendar ${c.label}` }, what, "Calendars → Read-only");
+  return c;
+}
+
+/** Resolve an account for a mutating tool, refusing read-only ones before any network access. */
+async function writable(ref: string, ctx: CallerContext, what: string): Promise<Account> {
+  const a = await resolveAccount(ref, ctx.userId);
+  if (a.readOnly) throw new ReadOnlyError(a, what);
+  return a;
+}
 
 /** A handler may return this to emit MCP content blocks directly instead of JSON. */
 export type RawContent = { __mcpContent: unknown[] };
@@ -56,21 +93,51 @@ const attachmentsSchema = {
   },
 };
 
+const calendar = {
+  type: "string",
+  description: "Calendar to act on — its label, the calendar's name, or id. Use list_calendars first.",
+};
+
+const eventProps = {
+  summary: { type: "string", description: "Title of the event." },
+  start: {
+    type: "string",
+    description:
+      'Start. "2026-09-14T10:00" is wall-clock time in `timezone`; "2026-09-14T10:00:00+02:00" or "...Z" is exact; "2026-09-14" for all-day (set allDay=true).',
+  },
+  end: { type: "string", description: "End, same formats. Defaults to one hour (all-day: one day) after start." },
+  allDay: { type: "boolean", description: "All-day event (start/end are dates; end is exclusive)." },
+  timezone: { type: "string", description: 'IANA zone for wall-clock times, e.g. "Europe/Berlin". Ask the user if unsure; do not guess UTC.' },
+  location: { type: "string" },
+  description: { type: "string", description: "Notes. Plain text." },
+  rrule: { type: "string", description: 'Recurrence rule, e.g. "FREQ=WEEKLY;BYDAY=MO" or "FREQ=MONTHLY;BYMONTHDAY=1;COUNT=12". Empty string removes recurrence.' },
+  remindMinutesBefore: { type: "number", description: "Reminder alert this many minutes before. null removes reminders." },
+  attendees: {
+    type: "array",
+    description:
+      "People to invite. THE CALENDAR SERVER SENDS THEM AN INVITATION E-MAIL IMMEDIATELY — always show the user the exact list and get their go-ahead before including attendees.",
+    items: { type: "object", properties: { email: { type: "string" }, name: { type: "string" } }, required: ["email"] },
+  },
+  status: { type: "string", enum: ["CONFIRMED", "TENTATIVE", "CANCELLED"] },
+};
+
 export const tools: Tool[] = [
   {
     name: "list_accounts",
     title: "List mail accounts",
     description:
-      "List every mail account connected to this server, with its label, email address and server settings. Call this first to learn which accounts exist.",
+      "List the caller's mail accounts, with label, email address, server settings and whether the account is read-only (readOnly: true means no tool may change or send anything on it). Call this first to learn which accounts exist.",
     inputSchema: { type: "object", properties: {} },
-    handler: async () => (await listAccounts()).map(redact),
+    mutating: false,
+    handler: async (_a, ctx) => (await listAccounts(ctx.userId)).map(redact),
   },
   {
     name: "list_folders",
     title: "List folders",
     description: "List the IMAP folders (mailboxes) of one account, including special-use folders like Sent and Trash.",
     inputSchema: { type: "object", properties: { account }, required: ["account"] },
-    handler: async (a) => mail.listFolders(await resolveAccount(a.account)),
+    mutating: false,
+    handler: async (a, ctx) => mail.listFolders(await resolveAccount(a.account, ctx.userId)),
   },
   {
     name: "search_messages",
@@ -90,7 +157,8 @@ export const tools: Tool[] = [
       },
       required: ["account"],
     },
-    handler: async (a) => mail.searchMessages(await resolveAccount(a.account), a),
+    mutating: false,
+    handler: async (a, ctx) => mail.searchMessages(await resolveAccount(a.account, ctx.userId), a),
   },
   {
     name: "get_message",
@@ -102,18 +170,24 @@ export const tools: Tool[] = [
         account,
         folder: { type: "string", description: "Folder the uid belongs to, default INBOX." },
         uid: { type: "number", description: "Message uid from search_messages." },
-        markSeen: { type: "boolean", description: "Mark the message read after fetching. Default false." },
+        markSeen: { type: "boolean", description: "Mark the message read after fetching. Default false. Refused on read-only accounts." },
       },
       required: ["account", "uid"],
     },
-    handler: async (a) =>
-      mail.getMessage(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, a.markSeen ?? false),
+    mutating: false,
+    handler: async (a, ctx) => {
+      const markSeen = a.markSeen === true;
+      const acct = markSeen
+        ? await writable(a.account, ctx, "marking a message read")
+        : await resolveAccount(a.account, ctx.userId);
+      return mail.getMessage(acct, a.folder ?? "INBOX", a.uid, markSeen);
+    },
   },
   {
     name: "send_message",
     title: "Send a message",
     description:
-      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the Webmail MCP admin page, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
+      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the Private Office MCP admin page, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
     inputSchema: {
       type: "object",
       properties: {
@@ -131,20 +205,22 @@ export const tools: Tool[] = [
       },
       required: ["account", "to", "subject"],
     },
-    handler: async (a) => {
+    mutating: true,
+    handler: async (a, ctx) => {
       // Reject malformed attachment specs before touching the network.
       validateAttachmentSpecs(a.attachments ?? []);
-      const acct = await resolveAccount(a.account);
+      const acct = await writable(a.account, ctx, "sending mail");
       const attachments = await resolveAttachments(acct, a.attachments ?? []);
       const args = { ...a, attachments, html: htmlFor(a) };
 
-      if (!(await requireApproval())) {
+      if (!(await requireApproval(ctx.userId))) {
         return { ...(await mail.sendMessage(acct, args)), approvalRequired: false };
       }
 
       // Park the composed message in the mailbox; only a human click releases it.
       const draft = await mail.createDraft(acct, args);
       const pending = await queueSend({
+        userId: ctx.userId,
         accountId: acct.accountId,
         accountLabel: acct.label,
         folder: draft.folder,
@@ -162,7 +238,7 @@ export const tools: Tool[] = [
         approvalId: pending.id,
         parkedIn: `${draft.folder} (uid ${draft.uid})`,
         message:
-          "NOT SENT. The mail is composed and waiting for the user to approve it by hand on the Webmail MCP admin page (Outbox). Tell the user it needs their approval there — you cannot release it yourself.",
+          "NOT SENT. The mail is composed and waiting for the user to approve it by hand in the Private Office MCP app (Outbox). Tell the user it needs their approval there — you cannot release it yourself.",
       };
     },
   },
@@ -189,9 +265,10 @@ export const tools: Tool[] = [
       },
       required: ["account"],
     },
-    handler: async (a) => {
+    mutating: true,
+    handler: async (a, ctx) => {
       validateAttachmentSpecs(a.attachments ?? []);
-      const acct = await resolveAccount(a.account);
+      const acct = await writable(a.account, ctx, "saving a draft");
       const attachments = await resolveAttachments(acct, a.attachments ?? []);
       return mail.createDraft(acct, { ...a, attachments, html: htmlFor(a) });
     },
@@ -212,8 +289,9 @@ export const tools: Tool[] = [
       },
       required: ["account", "uid"],
     },
-    handler: async (a): Promise<RawContent> => {
-      const att = await mail.getAttachment(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, {
+    mutating: false,
+    handler: async (a, ctx): Promise<RawContent> => {
+      const att = await mail.getAttachment(await resolveAccount(a.account, ctx.userId), a.folder ?? "INBOX", a.uid, {
         filename: a.filename,
         index: a.index,
       });
@@ -243,7 +321,8 @@ export const tools: Tool[] = [
       properties: { account, path: { type: "string", description: "Full path of the folder to create." } },
       required: ["account", "path"],
     },
-    handler: async (a) => mail.createFolder(await resolveAccount(a.account), a.path),
+    mutating: true,
+    handler: async (a, ctx) => mail.createFolder(await writable(a.account, ctx, "creating a folder"), a.path),
   },
   {
     name: "delete_folder",
@@ -262,13 +341,15 @@ export const tools: Tool[] = [
       },
       required: ["account", "path", "confirm"],
     },
-    handler: async (a) => {
+    mutating: true,
+    destructive: true,
+    handler: async (a, ctx) => {
       if (a.confirm !== true) {
         throw new Error(
           "Refused: deleting a folder destroys every message in it. Ask the user to confirm, then call again with confirm=true.",
         );
       }
-      return mail.deleteFolder(await resolveAccount(a.account), a.path);
+      return mail.deleteFolder(await writable(a.account, ctx, "deleting a folder"), a.path);
     },
   },
   {
@@ -286,8 +367,10 @@ export const tools: Tool[] = [
       },
       required: ["account", "uid"],
     },
-    handler: async (a) =>
-      mail.setFlags(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, a.add ?? [], a.remove ?? []),
+    mutating: true,
+    destructive: true,
+    handler: async (a, ctx) =>
+      mail.setFlags(await writable(a.account, ctx, "changing flags"), a.folder ?? "INBOX", a.uid, a.add ?? [], a.remove ?? []),
   },
   {
     name: "archive_message",
@@ -304,8 +387,9 @@ export const tools: Tool[] = [
       },
       required: ["account", "uids"],
     },
-    handler: async (a) =>
-      mail.archiveMessages(await resolveAccount(a.account), a.folder ?? "INBOX", a.uids, a.target),
+    mutating: true,
+    handler: async (a, ctx) =>
+      mail.archiveMessages(await writable(a.account, ctx, "archiving"), a.folder ?? "INBOX", a.uids, a.target),
   },
   {
     name: "move_message",
@@ -321,7 +405,83 @@ export const tools: Tool[] = [
       },
       required: ["account", "uid", "target"],
     },
-    handler: async (a) => mail.moveMessage(await resolveAccount(a.account), a.folder ?? "INBOX", a.uid, a.target),
+    mutating: true,
+    handler: async (a, ctx) => mail.moveMessage(await writable(a.account, ctx, "moving a message"), a.folder ?? "INBOX", a.uid, a.target),
+  },
+  /* --------------------------------- calendars --------------------------------- */
+  {
+    name: "list_calendars",
+    title: "List calendars",
+    description:
+      "List the caller's calendars: iCloud/CalDAV calendars and ICS subscriptions, with kind and whether they are read-only (ICS feeds always are). Call this first before any calendar tool.",
+    inputSchema: { type: "object", properties: {} },
+    mutating: false,
+    handler: async (_a, ctx) => (await listCalendars(ctx.userId)).map(redactCalendar),
+  },
+  {
+    name: "list_events",
+    title: "List events",
+    description:
+      "Events in a time window (default: the next 14 days, max 366 days). Recurring events are expanded into their occurrences. Times come back as UTC instants plus the event's own wall-clock time and zone — tell the user times in their zone.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        calendar,
+        from: { type: "string", description: "ISO 8601 start of the window. Default now." },
+        to: { type: "string", description: "ISO 8601 end of the window. Default from + 14 days." },
+        query: { type: "string", description: "Text to match in title, location, notes or attendees." },
+        limit: { type: "number", description: "Max events, default 50, max 200." },
+      },
+      required: ["calendar"],
+    },
+    mutating: false,
+    handler: async (a, ctx) => cal.listEvents(await resolveCalendar(a.calendar, ctx.userId), a),
+  },
+  {
+    name: "get_event",
+    title: "Get an event",
+    description: "One event by uid, with attendees, reminders, recurrence rule and notes.",
+    inputSchema: { type: "object", properties: { calendar, uid: { type: "string" } }, required: ["calendar", "uid"] },
+    mutating: false,
+    handler: async (a, ctx) => cal.getEvent(await resolveCalendar(a.calendar, ctx.userId), String(a.uid)),
+  },
+  {
+    name: "create_event",
+    title: "Create an event",
+    description:
+      "Create an event in a CalDAV calendar (iCloud etc.). Give wall-clock start/end with the user's timezone. Attendees receive invitations from the calendar server at once — confirm with the user first. Refused on read-only calendars and ICS feeds.",
+    inputSchema: { type: "object", properties: { calendar, ...eventProps }, required: ["calendar", "summary", "start"] },
+    mutating: true,
+    handler: async (a, ctx) => cal.createEvent(await writableCalendar(a.calendar, ctx, "creating an event"), a),
+  },
+  {
+    name: "update_event",
+    title: "Update an event",
+    description:
+      "Change fields of an existing event (only the fields you pass change; `attendees` replaces the whole list and newly added people are invited). For a recurring event this edits the whole series.",
+    inputSchema: { type: "object", properties: { calendar, uid: { type: "string" }, ...eventProps }, required: ["calendar", "uid"] },
+    mutating: true,
+    handler: async (a, ctx) => {
+      const { calendar: ref, uid, ...patch } = a;
+      return cal.updateEvent(await writableCalendar(ref, ctx, "updating an event"), String(uid), patch);
+    },
+  },
+  {
+    name: "delete_event",
+    title: "Delete an event",
+    description:
+      "Permanently delete an event (a recurring event: the whole series; attendees are told it was cancelled). Cannot be undone — show the user the title and date and get explicit confirmation before calling with confirm=true.",
+    inputSchema: {
+      type: "object",
+      properties: { calendar, uid: { type: "string" }, confirm: { type: "boolean", description: "Must be true, set only after the user confirmed." } },
+      required: ["calendar", "uid", "confirm"],
+    },
+    mutating: true,
+    destructive: true,
+    handler: async (a, ctx) => {
+      if (a.confirm !== true) throw new Error("Refused: deleting an event cannot be undone. Ask the user to confirm, then call again with confirm=true.");
+      return cal.deleteEvent(await writableCalendar(a.calendar, ctx, "deleting an event"), String(a.uid));
+    },
   },
 ];
 
@@ -346,10 +506,7 @@ export function validateAttachmentSpecs(specs: any[]): void {
  * `fromUid` entries are pulled off the IMAP server so the bytes never pass through
  * the model.
  */
-async function resolveAttachments(
-  acct: Awaited<ReturnType<typeof resolveAccount>>,
-  specs: any[],
-): Promise<mail.Attachment[]> {
+async function resolveAttachments(acct: Account, specs: any[]): Promise<mail.Attachment[]> {
   const out: mail.Attachment[] = [];
   for (const spec of specs) {
     if (spec.fromUid !== undefined) {

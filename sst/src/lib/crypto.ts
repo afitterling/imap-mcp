@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, createHmac, timingSafeEqual, scryptSync } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, createHmac, timingSafeEqual, scryptSync, createHash } from "node:crypto";
 import { Resource } from "sst";
 
 function key(): Buffer {
@@ -22,20 +22,18 @@ export function decrypt(blob: string): string {
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
 }
 
-/** Signed, expiring session cookie value for the admin UI. */
-export function signSession(ttlMs = 12 * 60 * 60 * 1000): string {
-  const exp = String(Date.now() + ttlMs);
-  const sig = createHmac("sha256", key()).update(exp).digest("base64url");
-  return `${exp}.${sig}`;
+/** Keyed hash for values that must be looked up but never recovered (codes, tokens). */
+export function hmac(value: string, purpose: string): string {
+  return createHmac("sha256", key()).update(`${purpose}\0${value}`).digest("base64url");
 }
 
-export function verifySession(value: string | undefined): boolean {
-  if (!value) return false;
-  const [exp, sig] = value.split(".");
-  if (!exp || !sig) return false;
-  const expected = createHmac("sha256", key()).update(exp).digest("base64url");
-  if (!safeEqual(sig, expected)) return false;
-  return Number(exp) > Date.now();
+/** Unkeyed hash for high-entropy secrets that are looked up by hash (access tokens). */
+export function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
+}
+
+export function randomToken(bytes = 32): string {
+  return randomBytes(bytes).toString("base64url");
 }
 
 export function safeEqual(a: string, b: string): boolean {

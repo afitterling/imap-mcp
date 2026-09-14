@@ -1,3 +1,6 @@
 .production.env
 .dev.env
 *.env
+
+# SST state and generated platform code (per checkout)
+sst/.sst/

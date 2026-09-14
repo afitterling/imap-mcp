@@ -6,16 +6,21 @@
   "scripts": {
     "dev": "sst dev",
     "deploy": "sst deploy --stage production",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --experimental-test-module-mocks --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1131.0",
     "@aws-sdk/client-dynamodb": "^3.1131.0",
     "@aws-sdk/lib-dynamodb": "^3.1131.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "aws-jwt-verify": "^5.2.1",
     "hono": "^4.13.7",
+    "ical.js": "^2.2.1",
     "imapflow": "^2.0.2",
     "mailparser": "^3.9.26",
     "nodemailer": "^10.0.9",
+    "tsdav": "^2.3.3",
     "zod": "^4.6.2"
   },
   "devDependencies": {
@@ -23,6 +28,7 @@
     "@types/node": "^22.20.2",
     "@types/nodemailer": "^8.0.1",
     "sst": "^4.17.1",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   }
 }

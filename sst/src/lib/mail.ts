@@ -59,7 +59,7 @@ export type SearchArgs = {
 export async function searchMessages(a: Account, args: SearchArgs) {
   const limit = Math.min(args.limit ?? 20, 100);
   return withImap(a, async (c) => {
-    const lock = await c.getMailboxLock(args.folder ?? "INBOX");
+    const lock = await c.getMailboxLock(args.folder ?? "INBOX", { readOnly: true });
     try {
       const criteria: Record<string, unknown> = {};
       if (args.query) criteria.or = [{ subject: args.query }, { body: args.query }];
@@ -96,7 +96,8 @@ export async function searchMessages(a: Account, args: SearchArgs) {
 
 export async function getMessage(a: Account, folder: string, uid: number, markSeen = false) {
   return withImap(a, async (c) => {
-    const lock = await c.getMailboxLock(folder);
+    // Opening read-only means a plain read leaves the server state exactly as it was.
+    const lock = await c.getMailboxLock(folder, { readOnly: !markSeen });
     try {
       const downloaded = await c.download(String(uid), undefined, { uid: true });
       if (!downloaded) throw new Error(`Message uid ${uid} not found in ${folder}`);
@@ -138,7 +139,7 @@ export async function getAttachment(
   maxBytes: number = MAX_ATTACHMENT_BYTES,
 ) {
   return withImap(a, async (c) => {
-    const lock = await c.getMailboxLock(folder);
+    const lock = await c.getMailboxLock(folder, { readOnly: true });
     try {
       const downloaded = await c.download(String(uid), undefined, { uid: true });
       if (!downloaded) throw new Error(`Message uid ${uid} not found in ${folder}`);
@@ -364,7 +365,7 @@ async function findSentFolder(c: ImapFlow): Promise<string | undefined> {
  */
 export async function sendParkedMessage(a: Account, folder: string, uid: number, envelopeTo: string) {
   const raw = await withImap(a, async (c) => {
-    const lock = await c.getMailboxLock(folder);
+    const lock = await c.getMailboxLock(folder, { readOnly: true });
     try {
       const downloaded = await c.download(String(uid), undefined, { uid: true });
       if (!downloaded) throw new Error(`The approved message (uid ${uid}) is no longer in ${folder}.`);
@@ -444,7 +445,7 @@ export async function deleteFolder(a: Account, path: string) {
 export async function testAccount(a: Account) {
   const result = { imap: "", smtp: "" };
   await withImap(a, async (c) => {
-    const box = await c.mailboxOpen("INBOX");
+    const box = await c.mailboxOpen("INBOX", { readOnly: true });
     result.imap = `OK — INBOX has ${box.exists} messages`;
   });
   const transport = nodemailer.createTransport({

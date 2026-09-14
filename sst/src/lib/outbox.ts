@@ -1,32 +1,13 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
 import { randomUUID } from "node:crypto";
+import { doc, epoch } from "./db.js";
 
-const doc = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
-  marshallOptions: { removeUndefinedValues: true },
-});
 const TABLE = () => Resource.OAuth.name;
-const epoch = () => Math.floor(Date.now() / 1000);
-
-/* --------------------------------- setting --------------------------------- */
-
-const SETTING_ID = "config#require-send-approval";
-
-/** Approval is ON unless a human has explicitly switched it off. */
-export async function requireApproval(): Promise<boolean> {
-  const res = await doc.send(new GetCommand({ TableName: TABLE(), Key: { id: SETTING_ID } }));
-  return res.Item?.value !== false;
-}
-
-export async function setRequireApproval(value: boolean): Promise<void> {
-  await doc.send(new PutCommand({ TableName: TABLE(), Item: { id: SETTING_ID, value } }));
-}
-
-/* --------------------------------- outbox --------------------------------- */
 
 export type Pending = {
   id: string;
+  userId: string;
   accountId: string;
   accountLabel: string;
   /** Where the composed message is parked until a human releases it. */
@@ -54,12 +35,13 @@ export async function queueSend(item: Omit<Pending, "id" | "createdAt" | "expire
   return pending;
 }
 
-export async function listPending(): Promise<Pending[]> {
+export async function listPending(userId: string): Promise<Pending[]> {
   const res = await doc.send(
-    new ScanCommand({
+    new QueryCommand({
       TableName: TABLE(),
-      FilterExpression: "begins_with(id, :p)",
-      ExpressionAttributeValues: { ":p": "outbox#" },
+      IndexName: "byUser",
+      KeyConditionExpression: "userId = :u AND begins_with(id, :p)",
+      ExpressionAttributeValues: { ":u": userId, ":p": "outbox#" },
     }),
   );
   return ((res.Items ?? []) as Pending[])
@@ -68,10 +50,11 @@ export async function listPending(): Promise<Pending[]> {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function getPending(id: string): Promise<Pending | undefined> {
+/** Only the owner can see, approve or discard a queued mail. */
+export async function getPending(id: string, userId: string): Promise<Pending | undefined> {
   const res = await doc.send(new GetCommand({ TableName: TABLE(), Key: { id: `outbox#${id}` } }));
-  if (!res.Item) return undefined;
-  return { ...(res.Item as Pending), id };
+  const p = res.Item as Pending | undefined;
+  return p && p.userId === userId ? { ...p, id } : undefined;
 }
 
 export async function dropPending(id: string): Promise<void> {

@@ -10,15 +10,19 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
-    "AdminPassword": {
-      "type": "sst.sst.Secret"
-      "value": string
+    "Audit": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "Auth": {
+      "id": string
+      "type": "sst.aws.CognitoUserPool"
+    }
+    "Calendars": {
+      "name": string
+      "type": "sst.aws.Dynamo"
     }
     "EncryptionKey": {
-      "type": "sst.sst.Secret"
-      "value": string
-    }
-    "McpToken": {
       "type": "sst.sst.Secret"
       "value": string
     }
@@ -26,10 +30,23 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
+    "PreSignUp": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "Server": {
       "name": string
       "type": "sst.aws.Function"
       "url": string
+    }
+    "Users": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "Web": {
+      "id": string
+      "secret": string
+      "type": "sst.aws.CognitoUserPoolClient"
     }
   }
 }

@@ -1,119 +1,174 @@
-# Webmail MCP
+# Private Office MCP
 
-An MCP server on AWS that lets Claude read, search and send mail on any number of
-IMAP/SMTP mail accounts — with a web UI for adding those accounts.
+(Infrastructure and package name remain `webmail-mcp`; renaming the SST app would recreate every resource.)
 
-**Live (stage `alex`)**
+A multi-user MCP server on AWS that lets Claude read, search, file and draft in each
+user's own IMAP/SMTP mailboxes and manage their calendars (iCloud/CalDAV read-write,
+ICS feeds read-only) — with every send held for human approval, optional read-only
+accounts and calendars, mandatory two-factor sign-in and a built-in audit trail.
 
-| | |
-|---|---|
-| Admin UI | https://uxtjw6anklhf5bmg44dt6dqffu0ptmtw.lambda-url.eu-central-1.on.aws/admin |
-| MCP endpoint | https://uxtjw6anklhf5bmg44dt6dqffu0ptmtw.lambda-url.eu-central-1.on.aws/mcp |
-| Admin password | see `.credentials.local` (git-ignored, local only) |
+The user manual (Apple Mail, Apple Calendar, connecting Claude) is served at `/docs`.
+
+> **Branch `upgrade`: not deployed yet.** See "Deploying this branch" below before running
+> `sst deploy`.
 
 ## Architecture
 
-One Lambda behind a Function URL serves both surfaces; accounts live in DynamoDB.
+One Lambda behind a Function URL serves the MCP endpoint, the OAuth server and the web app;
+four DynamoDB tables hold the state.
 
 ```
-Claude ──Bearer token──> /mcp   ┐
-                                ├─ Lambda (Hono) ──> DynamoDB (accounts, AES-256-GCM creds)
-Browser ──session cookie──> /admin ┘        └──> IMAP / SMTP of each mail server
+Claude Code ──personal token──┐
+claude.ai   ──OAuth token─────┼─> /mcp ─┐
+                               │        ├─ Lambda (Hono) ─┬─ Users     (people, scrypt hashes, MFA)
+Browser ──session cookie──> /app,/admin ┘                 ├─ Accounts  (mailboxes per owner, AES-256-GCM creds)
+                                                          ├─ OAuth     (sessions, tokens, grants, codes, outbox, settings, throttles)
+                                                          └─ Audit     (one row per event, 1-year TTL)
+                                                              └──> IMAP / SMTP, CalDAV (tsdav) and ICS feeds, SNS for SMS codes
 ```
 
-- `src/handler.ts` — routes: MCP, admin UI, account API
-- `src/mcp/` — JSON-RPC over Streamable HTTP (stateless) and the tool definitions
-- `src/lib/mail.ts` — IMAP (imapflow) + SMTP (nodemailer); connections open and close per request
-- `src/lib/crypto.ts` — credential encryption and signed admin sessions
-- `src/lib/oauth.ts` — OAuth 2.1: registration, PKCE codes, signed access/refresh tokens
-- `src/web/` — login, consent and admin pages
-
-## Tools exposed to Claude
-
-Accounts can be referenced by label, email or id — `"work"` is enough.
-
-| Tool | Does |
+| Path | Purpose |
 |---|---|
-| `list_accounts` | List connected accounts |
-| `list_folders` | List IMAP folders, with special-use flags |
-| `search_messages` | Search subject/body, filter by sender, unread, date |
-| `get_message` | Full body, headers, indexed attachment list |
-| `get_attachment` | Download one attachment (images viewable, rest as a file resource, 4 MB cap) |
-| `create_draft` | Save a message to Drafts over IMAP APPEND — nothing is sent |
-| `send_message` | Send over SMTP, with CC/BCC, threading and attachments (base64, or forwarded server-side from another message) |
-| `archive_message` | Move messages to the archive folder, auto-detected |
-| `move_message` | Move a message to any folder |
-| `flag_message` | Add/remove IMAP flags (`\Seen`, `\Flagged`, `\Deleted`) |
-| `create_folder` | Create a folder |
-| `delete_folder` | Delete a folder and its messages — requires `confirm=true`; INBOX and special-use folders are protected |
+| `src/handler.ts` | Composes the route modules and maps errors |
+| `src/routes/security.ts` | CSP with per-request nonce, HSTS, CSRF guard, body limits |
+| `src/routes/pages.ts` | Landing, support, docs, `/login` → Cognito, `/auth/callback`, `/app`, `/admin` |
+| `src/lib/cognito.ts`, `src/triggers/pre-signup.ts` | PKCE/state, token exchange + JWT validation, admin calls; allowlist trigger |
+| `src/routes/api.ts` | User JSON API: accounts, outbox, tokens, apps, sessions, activity, security |
+| `src/routes/admin.ts` | Admin JSON API: users, everyone's activity, settings |
+| `src/routes/oauth.ts` | OAuth 2.1 for MCP clients: registration, consent via Cognito, PKCE codes, tokens |
+| `src/routes/mcp.ts` | Resolves the bearer token to a user and hands off to the RPC layer |
+| `src/mcp/` | JSON-RPC over Streamable HTTP (stateless), tool definitions, read-only gate |
+| `src/lib/calendar.ts`, `calstore.ts`, `tz.ts` | CalDAV via tsdav + ical.js: discovery, time-range reads with recurrence expansion, create/update/delete with etag checks; ICS fetch with SSRF guard; VTIMEZONE synthesis without a tz database |
+| `src/lib/` | mail (imapflow/nodemailer), users (profile mirror), sessions, tokens, oauth, store, outbox, settings, audit, ratelimit, notify, crypto |
+| `src/web/` | `layout.ts` (design system, nonce'd CSS/JS) and one file per page |
 
-## Adding a mail account
+## Users and sign-in (Amazon Cognito)
 
-Open the admin UI, sign in, **Add mail account**. Presets cover Gmail, Outlook/M365,
-Fastmail, iCloud and Yahoo; anything else takes host/port directly. **Test** verifies
-IMAP and SMTP before Claude ever touches the mailbox. For Gmail, iCloud and Yahoo use
-an app-specific password, not the account password.
+Authentication is **Amazon Cognito** (`sst.aws.CognitoUserPool("Auth")`, managed login on a
+Cognito prefix domain, authorization code + PKCE). The app never handles a password.
+
+- **Who can sign up:** the addresses in `src/lib/allowlist.ts`, enforced by the Pre-Sign-Up
+  trigger `src/triggers/pre-signup.ts` — Cognito refuses everyone else. The first address is
+  `admin`; everyone else is `user` (role assigned in the app on first sign-in).
+- **Pool policy:** email as username, verified by Cognito; password ≥ 12 chars with upper,
+  lower, digit and symbol; **MFA `on`** with software token (authenticator app) — Cognito
+  forces setup at the first sign-in; account recovery by verified e-mail; Cognito's own
+  lockout on repeated failures.
+- **Flow:** `/login` → `beginLogin` stores a PKCE verifier + single-use `state` (10 min) →
+  Cognito hosted UI → `/auth/callback` exchanges the code (client secret, server side),
+  validates the ID token (JWKS, issuer, audience, `token_use`, expiry via `aws-jwt-verify`),
+  upserts the profile row in `Users` keyed by the Cognito `sub`, then opens the server-side
+  session (`__Host-` cookie, UA-bound, 1 h idle / 12 h absolute).
+- **Sign out** clears the session and sends the browser through Cognito's `/logout`;
+  "sign out everywhere" bumps the session version and calls `AdminUserGlobalSignOut`.
+- **Admins** can disable/enable (mirrored to Cognito), change roles, reset MFA
+  (`AdminSetUserMFAPreference` — Cognito re-prompts setup) and sign a user out everywhere.
+- The app client is created *after* the function (its callback is the function URL) and
+  found at runtime by name (`ListUserPoolClients`); the function gets only the seven
+  `cognito-idp` actions it uses, scoped to the pool ARN — no `cognito-idp:*` link.
 
 ## Connecting Claude
 
-Claude Code (already done for this machine):
-
-```bash
-claude mcp add --transport http --scope user webmail <mcp-url> \
-  --header "Authorization: Bearer <token>"
-```
-
-Claude desktop / claude.ai: Settings → Connectors → Add custom connector, paste the MCP
-URL, and click Connect. The server implements OAuth 2.1, so Claude registers itself
-(RFC 7591), sends you to a consent screen, and you approve with the admin password —
-no token handling. Access tokens last 30 days and refresh silently.
-
-## Tool-list caching
-
-Clients fetch `tools/list` once at connect and cache it; this server is stateless, so it
-cannot push `notifications/tools/list_changed`. After deploying a new tool, an
-already-connected client keeps the old list until it reconnects — toggle the connector
-off and on, or start a new conversation.
-
-## Auth
-
-Three ways in, all checked at `/mcp`:
-
 | Client | Mechanism |
 |---|---|
-| claude.ai / Claude desktop | OAuth 2.1 + PKCE (S256), dynamic client registration |
-| Claude Code | static `Authorization: Bearer <McpToken>` |
-| Anything that can't set headers | `?token=<McpToken>` |
+| Claude Code | Personal token from **Connect Claude** — `claude mcp add --transport http --scope user private-office <MCP URL> --header "Authorization: Bearer <token>"`. Stored hashed, 90-day default expiry, revocable. |
+| claude.ai / desktop | OAuth 2.1 + PKCE against this server (Claude needs dynamic client registration, which Cognito lacks). The consent screen sends the user through Cognito (password + MFA) and creates a *grant*; tokens are bound to user + grant and die the moment the grant is revoked under **Connected apps**. |
+| Anything holding a Cognito access token | Accepted directly at `/mcp` (validated against the pool's JWKS). |
 
-OAuth endpoints: `/.well-known/oauth-protected-resource`,
-`/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`,
-`/oauth/token`. Authorization codes are single-use, PKCE-bound and expire in 10 minutes
-(DynamoDB TTL sweeps the rest). Revoke every OAuth grant by rotating `EncryptionKey`,
-which invalidates the signatures on all issued tokens.
+There is no shared token and no `?token=` query parameter any more.
 
-## Sign-in alerts
+## Tools exposed to Claude
 
-Every sign-in attempt mails the operator, sent from the first configured account to its
-own address:
+Every tool is scoped to the calling user's accounts; accounts are referenced by label,
+email or id. `list_accounts` reports `readOnly`.
 
-| Event | Alert |
-|---|---|
-| Admin signs in to the web UI | ✓ Admin signed in |
-| Wrong admin password on the web UI | ⚠ Failed admin sign-in attempt |
-| A connector completes OAuth consent | ✓ New connector authorized: `<name>` |
-| Wrong password on the consent screen | ⚠ Failed connector authorization |
+| Tool | Does | Read-only account |
+|---|---|---|
+| `list_accounts` | List the caller's accounts | ✓ |
+| `list_folders` | List IMAP folders, with special-use flags | ✓ |
+| `search_messages` | Search subject/body, filter by sender, unread, date | ✓ |
+| `get_message` | Full body, headers, indexed attachment list | ✓ (`markSeen` refused) |
+| `get_attachment` | Download one attachment (4 MB cap) | ✓ |
+| `create_draft` | Save to Drafts over IMAP APPEND — nothing is sent | refused |
+| `send_message` | Compose; parked in Drafts and queued for approval (or sent directly if the user allowed it) | refused |
+| `archive_message` | Move to the archive folder, auto-detected | refused |
+| `move_message` | Move to any folder | refused |
+| `flag_message` | Add/remove IMAP flags | refused |
+| `create_folder` | Create a folder | refused |
+| `delete_folder` | Delete a folder and its messages — `confirm=true`, special folders protected | refused |
 
-Each mail carries the time, IP address and browser, plus the commands to rotate
-credentials. Failure alerts are throttled to one per five minutes per kind — an atomic
-conditional write claims the window, so a brute-force attempt cannot become a mail
-flood. Alert failures are logged and swallowed; they never block a login.
+Read paths open mailboxes with IMAP `EXAMINE` (read-only), so reading changes nothing on
+the server. `tools/list` carries `readOnlyHint` / `destructiveHint` annotations.
 
-## Operating
+### Calendar tools
+
+| Tool | Does | Read-only calendar / ICS |
+|---|---|---|
+| `list_calendars` | The caller's calendar sources with kind and `readOnly` | ✓ |
+| `list_events` | Events in a window (≤ 366 days), recurrences expanded, text filter | ✓ |
+| `get_event` | One event by uid with attendees, alarms, rrule | ✓ |
+| `create_event` | Timed/all-day, wall-clock in an IANA zone (VTIMEZONE emitted), rrule, reminder, attendees | refused |
+| `update_event` | Partial update, `SEQUENCE` bump, etag `If-Match` | refused |
+| `delete_event` | `confirm=true` required | refused |
+
+Attendees on an event make the CalDAV server (iCloud) send invitations immediately; the
+tool description tells the model to get the user's go-ahead first, and the audit row
+records the attendee count. Sources: iCloud (`https://caldav.icloud.com`, app-specific
+password), Fastmail, Google, any CalDAV, and `webcal://`/`https://` ICS feeds (public,
+https-only, private networks refused, 5 MB cap).
+
+## Outbox
+
+Per user, on by default: `send_message` writes the composed MIME to Drafts and queues a
+pointer. **Send now** in the app sends those exact bytes and files the copy in Sent;
+**Discard** drops the queue entry and leaves the draft. Queue entries expire after 7 days.
+Turning the hold off is logged and mails the user.
+
+## Audit trail
+
+`src/lib/audit.ts` writes one row per event to the `Audit` table (partition = user,
+`byDay` index for admins, 365-day TTL) and the same record as a structured JSON line to
+CloudWatch Logs (function logging is JSON, 1-month retention, set in SST): sign-in/2FA/OAuth events, token and app changes,
+account and calendar changes, outbox decisions, admin actions and **every MCP tool call**
+(tool, account or calendar, folder/uid/recipients/subject or event title/time, outcome,
+duration, client — never bodies, notes or attachments). Users see their own log under **Activity** with filters and CSV export;
+admins see everyone's by day. Exports are themselves logged.
+
+## Security notes
+
+- Strict CSP (`script-src`/`style-src` by nonce only, `frame-ancestors 'none'`), HSTS,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`.
+- CSRF: non-GET browser requests must be same-origin by Fetch Metadata / `Origin`; the
+  JSON API also needs `X-Requested-With: fetch`. `/mcp` and the OAuth token/registration
+  endpoints are machine endpoints with their own CORS.
+- Rate limits (atomic DynamoDB counters): sign-in starts per IP, OAuth registration,
+  failed MCP auth. Credential brute force is Cognito's problem, and it locks accounts.
+- Mail and calendar credentials are AES-256-GCM encrypted with `EncryptionKey`; tokens
+  are stored as SHA-256.
+- Every AWS resource is tagged `Project=webmail-mcp`, `Stage`, `ManagedBy=SST`.
+- Alerts (sign-ins, lockouts, new tokens, apps, factor changes, admin actions) are mailed
+  to the affected user from the system-sender account; failure alerts throttle to one per
+  5 minutes per kind.
+
+## Development
 
 ```bash
-npx sst deploy --stage alex        # deploy
-npx sst secret set McpToken <new>  # rotate the MCP token, then redeploy
-npx sst remove --stage alex        # tear down
+npm run typecheck
+npm test          # node:test; pure modules + mocked DB/mail layers
 ```
 
-Secrets: `EncryptionKey` (credential encryption + cookie signing), `AdminPassword`, `McpToken`.
+`sst dev` deploys a personal stage — do not run it on this branch until the steps below
+are done.
+
+## Deploying this branch
+
+1. Replace `michael.meyer@mindyourstep.de` in `src/lib/allowlist.ts`.
+2. Secrets: only `EncryptionKey` is used. `McpToken` and `AdminPassword` are no longer
+   read — remove them after the deploy with `npx sst secret remove`.
+3. Cognito sends verification mails from its default sender (50/day, plenty for two users).
+   MFA is authenticator-app only; SMS MFA would need an SNS role with `sns:Publish` on `*`,
+   which the project's IAM rule forbids.
+4. Deploy stage `alex` first. Sign up through the hosted UI as the admin: at the first
+   sign-in the existing production accounts (which have no owner) are claimed automatically.
+5. Reconnect Claude Code with a personal token and claude.ai via the new consent screen;
+   existing connectors keep a cached tool list until reconnected.
