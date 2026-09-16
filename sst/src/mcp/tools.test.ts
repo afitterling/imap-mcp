@@ -21,7 +21,7 @@ mock.module("../lib/store.js", {
 const stub = (name: string) => async () => { calls.push(name); return { ok: name }; };
 mock.module("../lib/mail.js", {
   namedExports: {
-    listFolders: stub("listFolders"), searchMessages: stub("searchMessages"), getMessage: stub("getMessage"),
+    listFolders: stub("listFolders"), searchMessages: stub("searchMessages"), getMessage: async () => { calls.push("getMessage"); return { to: "a@b.c", subject: "s", text: "t", attachments: [] }; },
     getAttachment: async () => { calls.push("getAttachment"); return { filename: "a.txt", contentType: "text/plain", size: 1, content: Buffer.from("a") }; },
     setFlags: stub("setFlags"), archiveMessages: stub("archiveMessages"), moveMessage: stub("moveMessage"),
     createFolder: stub("createFolder"), deleteFolder: stub("deleteFolder"), createDraft: stub("createDraft"), sendMessage: stub("sendMessage"),
