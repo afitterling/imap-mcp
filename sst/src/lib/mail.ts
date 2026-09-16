@@ -325,6 +325,11 @@ async function findDraftsFolder(c: ImapFlow): Promise<string> {
   );
 }
 
+/** The account's Drafts folder path (special-use flag, else a well-known name). */
+export async function draftsFolder(a: Account): Promise<string> {
+  return withImap(a, (c) => findDraftsFolder(c));
+}
+
 /**
  * Save a message to the Drafts folder over IMAP APPEND. Nothing is sent: the user
  * opens it in their own mail client, edits and sends it there.

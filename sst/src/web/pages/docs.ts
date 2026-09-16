@@ -30,9 +30,10 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <a class="sub" href="#cal-what">What Claude can do</a>
       <a class="sub" href="#cal-ics">ICS subscriptions</a>
       <a class="sub" href="#cal-trouble">Troubleshooting</a>
-      <a href="#connect">4. Connecting Claude</a>
-      <a href="#safety">5. Safety &amp; privacy</a>
-      <a href="#ops">6. Operations (CLI)</a>
+      <a href="#guardrails">4. Guardrails</a>
+      <a href="#connect">5. Connecting Claude</a>
+      <a href="#safety">6. Safety &amp; privacy</a>
+      <a href="#ops">7. Operations (CLI)</a>
     </nav>
     <div class="prose">
 
@@ -76,7 +77,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <ul>
         <li><b>Search and read</b> — folders, subject/body/sender/date search, full messages, attachment download (images shown inline, other files as attachments; 4 MB each).</li>
         <li><b>Draft</b> — writes into your Drafts folder; you open it in Mail.app, edit and send yourself.</li>
-        <li><b>Send</b> — by default Claude cannot send. It composes, parks the mail in Drafts and adds it to your <b>Outbox</b>; see below.</li>
+        <li><b>Send</b> — by default Claude cannot send. It composes, parks the mail in Drafts and adds it to your <b>Outbox</b>; see below. The same goes for a draft you wrote yourself in Mail.app: “send my draft to Anna” queues it for your approval.</li>
         <li><b>File</b> — archive, move between folders, flag/unflag, mark read/unread, create folders. Deleting folders needs your explicit confirmation.</li>
         <li><b>Nothing at all beyond reading</b> when the account is read-only — including marking a message as read.</li>
       </ul>
@@ -134,7 +135,16 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>“The event changed on the server while editing”</b> — you or a device edited it at the same time; ask Claude to fetch and retry.</li>
       </ul>
 
-      <h2 id="connect">4. Connecting Claude</h2>
+      <h2 id="guardrails">4. Guardrails</h2>
+      <p>Under <b>Guardrails</b> you write rules, in plain language, that the server enforces on <em>every</em> tool call before anything happens — independent of what the model remembers or intends. Each rule applies to all tools or to the ones you tick, and has a mode:</p>
+      <ul>
+        <li><b>Remind</b> — the rule is placed in Claude's instructions at connect time and prepended to every matching tool result. For style and preference rules: “Write German mails with Sie”, “Never archive mail from my accountant”.</li>
+        <li><b>Confirm</b> — a matching call is refused with the rule text; Claude has to follow it (typically: ask you) and then call again with an explicit acknowledgement of the rule id. For “ask me first” rules: “Before sending to anyone outside my company, show me the recipients and wait for my OK.”</li>
+        <li><b>Block</b> — matching calls are always refused, and Claude is told not to retry. For hard limits: “Never delete calendar events” (tick <code>delete_event</code>), “No sending at all from the Private account”.</li>
+      </ul>
+      <p>Every refusal and every reminder is recorded in your Activity log (kind “Settings” for rule changes; the tool call itself shows <code>denied</code> with the rule id). Claude can read the current rules with <code>list_guardrails</code>. Guardrails complement, not replace, the structural safeguards — read-only accounts and the Outbox stay as they are.</p>
+
+      <h2 id="connect">5. Connecting Claude</h2>
       <h3>Claude Code</h3>
       <ol>
         <li><b>Connect Claude → Create token</b>, name it after the machine. Copy the token — it is shown once.</li>
@@ -150,7 +160,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       </ol>
       <p>Clients cache the tool list when they connect. After the server is updated, toggle the connector off and on (or start a new conversation) to see new tools. A good first prompt: <i>“What's in my inbox, and what's on my calendar this week?”</i></p>
 
-      <h2 id="safety">5. Safety &amp; privacy</h2>
+      <h2 id="safety">6. Safety &amp; privacy</h2>
       <ul>
         <li><b>Logged:</b> sign-ins and failures, token and connector changes, mailbox and calendar changes, Outbox decisions, and every tool call Claude makes — tool, account or calendar, folder/uid/recipients/subject or event title and time, outcome, duration. <b>Never logged:</b> message bodies, attachments, event notes, passwords, codes.</li>
         <li><b>Stored encrypted:</b> mail and calendar passwords. Your sign-in password and authenticator secret live in Cognito, never here. Tokens are stored only as hashes.</li>
@@ -159,7 +169,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>New phone:</b> Security → Set up / replace authenticator. Locked out: the operator resets your two-factor setup on the command line and Cognito asks for a new authenticator at the next sign-in.</li>
       </ul>
 
-      <h2 id="ops">6. Operations (command line)</h2>
+      <h2 id="ops">7. Operations (command line)</h2>
       <p>There is no administrator in the web app: everybody has the same rights over their own data and nothing else. The few things that must be done <em>to</em> a user happen on the command line, from the repository, with AWS credentials for the stage:</p>
       <p><code>cd sst &amp;&amp; npm run user -- &lt;command&gt; [email] --stage dev</code></p>
       <ul>

@@ -5,6 +5,7 @@ import { queueSend } from "../lib/outbox.js";
 import { requireApproval } from "../lib/settings.js";
 import { listCalendars, resolveCalendar, redactCalendar, isReadOnly, type CalendarSource } from "../lib/calstore.js";
 import * as cal from "../lib/calendar.js";
+import { listGuardrails } from "../lib/guardrails.js";
 
 /** Who is calling, as established by the HTTP layer. Every tool is scoped to `userId`. */
 export type CallerContext = {
@@ -245,6 +246,54 @@ export const tools: Tool[] = [
     },
   },
   {
+    name: "send_draft",
+    title: "Send an existing draft",
+    description:
+      "Send a message that already sits in the Drafts folder (written by the user in their mail client, or by create_draft). By default this does NOT send: the draft is queued for the user to approve by hand in the app's Outbox, exactly like send_message. Give the draft's uid from search_messages on the Drafts folder. Recipients are taken from the draft itself.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        uid: { type: "number", description: "Uid of the draft (search_messages with folder = the Drafts folder)." },
+        folder: { type: "string", description: "Folder the draft is in. Default: the account's Drafts folder." },
+      },
+      required: ["account", "uid"],
+    },
+    mutating: true,
+    handler: async (a, ctx) => {
+      const acct = await writable(a.account, ctx, "sending a draft");
+      const folder = a.folder ?? (await mail.draftsFolder(acct));
+      const draft = await mail.getMessage(acct, folder, a.uid, false);
+      const to = draft.to?.trim();
+      if (!to) throw new Error("This draft has no recipient. Add one (or use send_message with explicit recipients).");
+      const recipients = [to, draft.cc].filter(Boolean).join(",");
+
+      if (!(await requireApproval(ctx.userId))) {
+        return { ...(await mail.sendParkedMessage(acct, folder, a.uid, recipients)), sent: true, approvalRequired: false };
+      }
+      const pending = await queueSend({
+        userId: ctx.userId,
+        accountId: acct.accountId,
+        accountLabel: acct.label,
+        folder,
+        uid: a.uid,
+        to,
+        cc: draft.cc,
+        subject: draft.subject ?? "(no subject)",
+        preview: String(draft.text ?? "").slice(0, 400),
+        attachments: (draft.attachments ?? []).map((x) => ({ filename: x.filename ?? "attachment", size: x.size ?? 0 })),
+      });
+      return {
+        sent: false,
+        status: "awaiting_approval",
+        approvalId: pending.id,
+        parkedIn: `${folder} (uid ${a.uid})`,
+        message:
+          "NOT SENT. The draft is queued and waits for the user to approve it by hand in the app (Outbox). Tell the user it needs their approval there — you cannot release it yourself.",
+      };
+    },
+  },
+  {
     name: "create_draft",
     title: "Save a draft",
     description:
@@ -409,6 +458,15 @@ export const tools: Tool[] = [
     },
     mutating: true,
     handler: async (a, ctx) => mail.moveMessage(await writable(a.account, ctx, "moving a message"), a.folder ?? "INBOX", a.uid, a.target),
+  },
+  {
+    name: "list_guardrails",
+    title: "List the user's guardrails",
+    description:
+      "The rules the user has set for how you may use these tools. Read them before doing anything consequential. 'confirm' rules refuse matching calls until you re-call with guardrails_ack; 'block' rules cannot be overridden; 'remind' rules are advice you must follow.",
+    inputSchema: { type: "object", properties: {} },
+    mutating: false,
+    handler: async (_a, ctx) => (await listGuardrails(ctx.userId)).filter((r) => r.enabled).map(({ id, text, tools, mode }) => ({ id, text, appliesTo: tools.length ? tools : "all tools", mode })),
   },
   /* --------------------------------- calendars --------------------------------- */
   {

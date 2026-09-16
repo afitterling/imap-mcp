@@ -94,6 +94,8 @@ email or id. `list_accounts` reports `readOnly`.
 | `get_attachment` | Download one attachment (4 MB cap) | ✓ |
 | `create_draft` | Save to Drafts over IMAP APPEND — nothing is sent | refused |
 | `send_message` | Compose; parked in Drafts and queued for approval (or sent directly if the user allowed it) | refused |
+| `send_draft` | Queue an existing draft (written in the mail client or by `create_draft`) for approval, recipients from the draft | refused |
+| `list_guardrails` | The user's guardrails (see below) | ✓ |
 | `archive_message` | Move to the archive folder, auto-detected | refused |
 | `move_message` | Move to any folder | refused |
 | `flag_message` | Add/remove IMAP flags | refused |
@@ -119,6 +121,15 @@ tool description tells the model to get the user's go-ahead first, and the audit
 records the attendee count. Sources: iCloud (`https://caldav.icloud.com`, app-specific
 password), Fastmail, Google, any CalDAV, and `webcal://`/`https://` ICS feeds (public,
 https-only, private networks refused, 5 MB cap).
+
+## Guardrails
+
+Per-user rules in plain language (`src/lib/guardrails.ts`), evaluated by the server on every
+`tools/call` before the handler runs: **remind** (injected into the server instructions and
+prepended to matching results), **confirm** (the call is refused until the model re-calls with
+`guardrails_ack: [ruleId]`), **block** (always refused). Managed in the Guardrails tab, audited,
+readable by the model via `list_guardrails`; every tool's schema gains the optional
+`guardrails_ack` argument.
 
 ## Outbox
 

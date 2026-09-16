@@ -25,6 +25,7 @@ mock.module("../lib/mail.js", {
     getAttachment: async () => { calls.push("getAttachment"); return { filename: "a.txt", contentType: "text/plain", size: 1, content: Buffer.from("a") }; },
     setFlags: stub("setFlags"), archiveMessages: stub("archiveMessages"), moveMessage: stub("moveMessage"),
     createFolder: stub("createFolder"), deleteFolder: stub("deleteFolder"), createDraft: stub("createDraft"), sendMessage: stub("sendMessage"),
+    sendParkedMessage: stub("sendParkedMessage"), draftsFolder: async () => { calls.push("draftsFolder"); return "Drafts"; },
     MAX_TOTAL_ATTACHMENT_BYTES: 1024,
   },
 });
@@ -53,12 +54,14 @@ mock.module("../lib/calendar.js", {
   },
 });
 mock.module("../lib/outbox.js", { namedExports: { queueSend: async () => ({ id: "p" }) } });
+mock.module("../lib/guardrails.js", { namedExports: { listGuardrails: async () => [] } });
 
 const { tools, toolMap, ReadOnlyError } = await import("./tools.js");
 const ctx = { userId: "u1", auth: "pat" as const, tokenId: "t" };
 
 const MUTATING: Record<string, any> = {
   send_message: { to: "a@b.c", subject: "s", text: "t" },
+  send_draft: { uid: 7 },
   create_draft: { subject: "s" },
   flag_message: { uid: 1, add: ["\\Seen"] },
   archive_message: { uids: [1] },
@@ -77,7 +80,7 @@ const CAL_READ: Record<string, any> = { list_events: {}, get_event: { uid: "u" }
 test("every tool declares mutating and matches the expected sets", () => {
   for (const t of tools) assert.equal(typeof t.mutating, "boolean", t.name);
   assert.deepEqual(tools.filter((t) => t.mutating).map((t) => t.name).sort(), [...Object.keys(MUTATING), ...Object.keys(CAL_MUTATING)].sort());
-  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars"].sort());
+  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails"].sort());
 });
 
 test("mutating tools are refused on a read-only account before touching mail", async () => {

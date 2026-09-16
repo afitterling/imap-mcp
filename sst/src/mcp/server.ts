@@ -1,5 +1,6 @@
 import { tools, toolMap, type CallerContext } from "./tools.js";
 import { audit } from "../lib/audit.js";
+import { listGuardrails, evaluate, refusal, describe, type Guardrail } from "../lib/guardrails.js";
 
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SERVER_INFO = { name: "webmail-mcp", title: "WebMail / Private Office MCP", version: "0.2.0" };
@@ -38,6 +39,10 @@ const INSTRUCTIONS = [
   "calendar server send invitation e-mails immediately — show the list and get explicit approval first.",
   "Deleting an event needs the same confirmation as deleting a folder.",
   "",
+  "GUARDRAILS: the user may have written rules (see list_guardrails and the section below). Rules marked",
+  "'confirm' refuse a matching call until you re-call it with guardrails_ack listing the rule ids — do that",
+  "only after you have actually followed the rule. Rules marked 'block' cannot be overridden.",
+  "",
   "Every tool call is recorded in the user's activity log. Deleting messages and folders is visible to",
   "other people and often irreversible — confirm with the user before flagging a message \\Deleted or",
   "calling delete_folder.",
@@ -59,6 +64,19 @@ function summarizeArgs(args: Record<string, unknown> | undefined): Record<string
   return out;
 }
 
+const ACK_PROP = {
+  guardrails_ack: {
+    type: "array",
+    items: { type: "string" },
+    description: "Ids of the user's 'confirm' guardrails you have read and followed for this call. Only needed when a call was refused with such a rule.",
+  },
+};
+
+function withAck(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = (schema.properties as Record<string, unknown> | undefined) ?? {};
+  return { ...schema, properties: { ...props, ...ACK_PROP } };
+}
+
 async function dispatch(req: Req, ctx: CallerContext): Promise<Res | null> {
   const id = req.id ?? null;
   const ok = (result: unknown): Res => ({ jsonrpc: "2.0", id, result });
@@ -66,11 +84,13 @@ async function dispatch(req: Req, ctx: CallerContext): Promise<Res | null> {
   switch (req.method) {
     case "initialize": {
       const asked = req.params?.protocolVersion;
+      const rules = (await listGuardrails(ctx.userId).catch(() => [])).filter((r) => r.enabled);
+      const extra = rules.length ? ` USER GUARDRAILS (in effect for every call): ${describe(rules).replace(/\n/g, " | ")}` : "";
       return ok({
         protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: INSTRUCTIONS,
+        instructions: INSTRUCTIONS + extra,
       });
     }
     case "ping":
@@ -81,7 +101,7 @@ async function dispatch(req: Req, ctx: CallerContext): Promise<Res | null> {
           name,
           title,
           description,
-          inputSchema,
+          inputSchema: withAck(inputSchema),
           annotations: { title, readOnlyHint: !mutating, destructiveHint: destructive === true, openWorldHint: true },
         })),
       });
@@ -91,7 +111,7 @@ async function dispatch(req: Req, ctx: CallerContext): Promise<Res | null> {
       if (!tool) {
         return { jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown tool: ${name}` } };
       }
-      const args = req.params?.arguments ?? {};
+      const { guardrails_ack: ack, ...args } = (req.params?.arguments ?? {}) as Record<string, unknown>;
       const started = Date.now();
       const record = (outcome: "success" | "failure" | "denied", extra: Record<string, string | undefined> = {}) =>
         audit({
@@ -105,15 +125,23 @@ async function dispatch(req: Req, ctx: CallerContext): Promise<Res | null> {
           ip: ctx.ip,
           durationMs: Date.now() - started,
         });
+      // The user's guardrails run before anything else, on every call.
+      const verdict = evaluate(await listGuardrails(ctx.userId).catch(() => [] as Guardrail[]), name, ack);
+      if (!verdict.ok) {
+        await record("denied", { guardrail: verdict.rules.map((r) => r.id).join(","), reason: verdict.reason });
+        return ok({ content: [{ type: "text", text: refusal(verdict) }], isError: true });
+      }
+      const banner = verdict.reminders.length ? `Guardrails in effect: ${describe(verdict.reminders).replace(/\n/g, " | ")}\n\n` : "";
       try {
         const result = await tool.handler(args, ctx);
-        await record("success");
+        await record("success", verdict.reminders.length ? { guardrails: verdict.reminders.map((r) => r.id).join(",") } : {});
         // Tools returning binary or viewable content emit their own MCP blocks.
         if (result && typeof result === "object" && "__mcpContent" in result) {
-          return ok({ content: (result as { __mcpContent: unknown[] }).__mcpContent, isError: false });
+          const blocks = (result as { __mcpContent: unknown[] }).__mcpContent;
+          return ok({ content: banner ? [{ type: "text", text: banner.trim() }, ...blocks] : blocks, isError: false });
         }
         return ok({
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: banner + JSON.stringify(result, null, 2) }],
           structuredContent: { result },
           isError: false,
         });

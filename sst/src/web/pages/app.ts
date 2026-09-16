@@ -18,6 +18,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
     <button data-tab="accounts" class="cur">Accounts</button>
     <button data-tab="calendars">Calendars</button>
     <button data-tab="outbox">Outbox <span id="obCount" class="chip accent hidden"></span></button>
+    <button data-tab="guardrails">Guardrails</button>
     <button data-tab="connect">Connect Claude</button>
     <button data-tab="activity">Activity</button>
     <button data-tab="security">Security</button>
@@ -41,6 +42,21 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
         and it goes out only when you press <b>Send now</b> below. Turning it off lets Claude send directly — the change is logged.</div>
     </div>
     <div class="grid" id="outbox"></div>
+  </section>
+
+  <!-- ------------------------------ Guardrails ------------------------------ -->
+  <section class="tab" id="tab-guardrails">
+    <div class="card mb12">
+      <h3>Rules Claude must follow</h3>
+      <p class="muted small">Every guardrail is checked by the server on every tool call, before anything happens. Write them in plain language.</p>
+      <ul class="small muted mb0">
+        <li><b>Remind</b> — the rule is put in front of Claude at connect time and on every matching result.</li>
+        <li><b>Confirm</b> — a matching call is refused until Claude has read the rule and explicitly re-calls with an acknowledgement. Use this for "ask me first" rules.</li>
+        <li><b>Block</b> — matching calls are always refused. Claude cannot override this.</li>
+      </ul>
+      <div class="row mt12"><button class="primary" id="grAdd">Add guardrail</button></div>
+    </div>
+    <div class="grid" id="guardrails"><div class="empty">Loading…</div></div>
   </section>
 
   <!-- --------------------------- Connect Claude --------------------------- -->
@@ -116,6 +132,28 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
     </div>
   </section>
 </div>
+
+<!-- guardrail form -->
+<dialog id="grDlg"><form id="grForm">
+  <div class="dlg-body">
+    <h3 id="grTitle">Add guardrail</h3>
+    <input type="hidden" id="grId">
+    <label>Rule (plain language, shown to Claude)</label>
+    <textarea id="grText" rows="3" maxlength="600" required placeholder="e.g. Never send or draft mail to anyone outside @mindyourstep.de without asking me first."></textarea>
+    <label>Mode</label>
+    <select id="grMode">
+      <option value="remind">Remind — advice on every matching call</option>
+      <option value="confirm">Confirm — refuse until Claude acknowledges the rule</option>
+      <option value="block">Block — always refuse</option>
+    </select>
+    <label>Applies to</label>
+    <div class="row" id="grTools"></div>
+    <div class="hint">Nothing ticked = every tool.</div>
+    <label class="inline mt16"><input type="checkbox" id="grEnabled" checked> Enabled</label>
+    <div class="status" id="grStatus"></div>
+  </div>
+  <div class="dlg-foot"><button type="button" class="ghost" id="grCancel">Cancel</button><button type="submit" class="primary" id="grSave">Save</button></div>
+</form></dialog>
 
 <!-- authenticator setup -->
 <dialog id="totpDlg"><form id="totpForm">
@@ -215,7 +253,7 @@ const PRESETS = {
 };
 
 /* ------------------------------- tabs ------------------------------- */
-const loaders = { accounts: loadAccounts, calendars: loadCalendars, outbox: loadOutbox, connect: loadConnect, activity: () => loadActivity(true), security: loadSecurity };
+const loaders = { accounts: loadAccounts, calendars: loadCalendars, guardrails: loadGuardrails, outbox: loadOutbox, connect: loadConnect, activity: () => loadActivity(true), security: loadSecurity };
 function showTab(name, push) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('cur', b.dataset.tab === name));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('cur', t.id === 'tab-' + name));
@@ -420,6 +458,40 @@ $('reqApproval').addEventListener('change', async () => {
   if (!$('reqApproval').checked && !confirm('Allow Claude to send mail directly, without your approval?')) { $('reqApproval').checked = true; return; }
   await api('/api/outbox/settings', { method: 'POST', body: { requireApproval: $('reqApproval').checked } }); loadOutbox();
 });
+
+/* ----------------------------- guardrails ----------------------------- */
+let grToolNames = [];
+async function loadGuardrails() {
+  const d = await api('/api/guardrails'); grToolNames = d.tools;
+  const el = $('guardrails');
+  if (!d.rules.length) { el.innerHTML = '<div class="empty">No guardrails yet. Add one, e.g. “Ask me before sending anything” (Confirm on send_message).</div>'; return; }
+  const MODE = { remind: ['Remind', ''], confirm: ['Confirm', 'warn'], block: ['Block', 'bad'] };
+  el.innerHTML = d.rules.map(r => \`<div class="item"><div class="grow">
+      <h3>\${esc(r.text)}</h3>
+      <div class="chips"><span class="chip \${MODE[r.mode][1]}">\${MODE[r.mode][0]}</span><span class="chip">\${r.tools.length ? esc(r.tools.join(', ')) : 'all tools'}</span>
+        \${r.enabled ? '' : '<span class="chip bad">disabled</span>'}<span class="chip mono">id \${esc(r.id)}</span></div>
+    </div><div class="row">
+      <label class="toggle"><input type="checkbox" data-gron="\${r.id}" \${r.enabled ? 'checked' : ''}> Enabled</label>
+      <button data-gredit="\${r.id}">Edit</button><button class="danger" data-grdel="\${r.id}">Delete</button>
+    </div></div>\`).join('');
+  el.querySelectorAll('[data-gron]').forEach(cb => cb.addEventListener('change', async () => {
+    const r = d.rules.find(x => x.id === cb.dataset.gron); await api('/api/guardrails', { method: 'POST', body: { ...r, enabled: cb.checked } }); loadGuardrails(); }));
+  el.querySelectorAll('[data-gredit]').forEach(b => b.addEventListener('click', () => openGr(d.rules.find(x => x.id === b.dataset.gredit))));
+  el.querySelectorAll('[data-grdel]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Delete this guardrail?')) return; await api('/api/guardrails/' + b.dataset.grdel, { method: 'DELETE' }); loadGuardrails(); }));
+}
+function openGr(r) {
+  $('grForm').reset(); $('grId').value = r ? r.id : ''; $('grTitle').textContent = r ? 'Edit guardrail' : 'Add guardrail'; status('grStatus', '');
+  $('grText').value = r ? r.text : ''; $('grMode').value = r ? r.mode : 'remind'; $('grEnabled').checked = r ? r.enabled : true;
+  $('grTools').innerHTML = grToolNames.map(t => '<label class="toggle"><input type="checkbox" value="' + esc(t) + '"' + (r && r.tools.includes(t) ? ' checked' : '') + '> ' + esc(t) + '</label>').join('');
+  $('grDlg').showModal();
+}
+$('grAdd').addEventListener('click', () => openGr(null));
+$('grCancel').addEventListener('click', () => $('grDlg').close());
+$('grForm').addEventListener('submit', async (e) => { e.preventDefault(); status('grStatus', 'Saving…');
+  const tools = [...$('grTools').querySelectorAll('input:checked')].map(i => i.value);
+  try { await api('/api/guardrails', { method: 'POST', body: { id: $('grId').value || undefined, text: $('grText').value, mode: $('grMode').value, tools, enabled: $('grEnabled').checked } }); $('grDlg').close(); loadGuardrails(); }
+  catch (err) { status('grStatus', err.message, 'bad'); } });
 
 /* ------------------------------ connect ------------------------------ */
 async function loadConnect() {

@@ -14,6 +14,9 @@ import { audit, forUser, toCsv, type AuditKind } from "../lib/audit.js";
 import { alertUser, requestContext } from "../lib/notify.js";
 import { bumpSessionVersion, publicUser } from "../lib/users.js";
 import { globalSignOut, userStatus, beginTotp, confirmTotp, otpauthUri } from "../lib/cognito.js";
+import { listGuardrails, upsertGuardrail, deleteGuardrail } from "../lib/guardrails.js";
+import { tools as mcpTools } from "../mcp/tools.js";
+const toolNames = () => mcpTools.map((t) => t.name);
 import { cognitoAccessToken } from "../lib/sessions.js";
 import QRCode from "qrcode";
 
@@ -287,6 +290,34 @@ api.post("/calendars/:id/test", async (c) => {
     await audit({ ...who(c, s), kind: "calendar", action: "calendar.test", outcome: "failure", target: cal.label, details: { error: message } });
     throw new HttpError(502, message);
   }
+});
+
+/* ------------------------------- guardrails ------------------------------- */
+
+const knownTools = () => new Set(toolNames());
+
+api.get("/guardrails", async (c) => {
+  const s = await requireSigned(c);
+  return c.json({ rules: await listGuardrails(s.user.userId), tools: toolNames() });
+});
+
+api.post("/guardrails", async (c) => {
+  const s = await requireSigned(c);
+  const b = await jsonBody(c);
+  try {
+    const rule = await upsertGuardrail(s.user.userId, b, knownTools());
+    await audit({ ...who(c, s), kind: "settings", action: b.id ? "guardrail.update" : "guardrail.create", outcome: "success", target: rule.id, details: { mode: rule.mode, tools: rule.tools.join(",") || "all", enabled: rule.enabled, text: rule.text.slice(0, 120) } });
+    return c.json(rule);
+  } catch (err) {
+    throw bad(err instanceof Error ? err.message : String(err));
+  }
+});
+
+api.delete("/guardrails/:id", async (c) => {
+  const s = await requireSigned(c);
+  const ok = await deleteGuardrail(s.user.userId, c.req.param("id"));
+  await audit({ ...who(c, s), kind: "settings", action: "guardrail.delete", outcome: ok ? "success" : "failure", target: c.req.param("id") });
+  return c.json({ ok });
 });
 
 /* -------------------------------- outbox -------------------------------- */
