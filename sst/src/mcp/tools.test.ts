@@ -7,6 +7,7 @@ const accounts: Record<string, any> = {
   rw: { accountId: "rw", ownerId: "u1", label: "Open", email: "o@x.y", imap: {}, smtp: {}, readOnly: false },
 };
 const calls: string[] = [];
+const searchArgs: any[] = [];
 mock.module("../lib/store.js", {
   namedExports: {
     listAccounts: async (owner: string) => Object.values(accounts).filter((a) => a.ownerId === owner),
@@ -21,7 +22,9 @@ mock.module("../lib/store.js", {
 const stub = (name: string) => async () => { calls.push(name); return { ok: name }; };
 mock.module("../lib/mail.js", {
   namedExports: {
-    listFolders: stub("listFolders"), searchMessages: stub("searchMessages"), getMessage: async () => { calls.push("getMessage"); return { to: "a@b.c", subject: "s", text: "t", attachments: [] }; },
+    listFolders: stub("listFolders"),
+    searchMessages: async (_a: any, args: any) => { calls.push("searchMessages"); searchArgs.push(args); return [{ uid: 9, folder: args.folder ?? "INBOX", subject: "s" }]; },
+    getMessage: async (_a: any, folder: string, uid: number) => { calls.push("getMessage"); return { uid, folder, to: "a@b.c", subject: "s", text: "t", attachments: [] }; },
     getAttachment: async () => { calls.push("getAttachment"); return { filename: "a.txt", contentType: "text/plain", size: 1, content: Buffer.from("a") }; },
     setFlags: stub("setFlags"), archiveMessages: stub("archiveMessages"), moveMessage: stub("moveMessage"),
     createFolder: stub("createFolder"), deleteFolder: stub("deleteFolder"), createDraft: stub("createDraft"), sendMessage: stub("sendMessage"),
@@ -152,4 +155,23 @@ test("tools/list annotations mark read-only and destructive tools", () => {
   assert.equal(byName.flag_message.destructive, true);
   assert.equal(byName.delete_event.destructive, true);
   assert.notEqual(byName.search_messages.destructive, true);
+});
+
+test("search_messages searches headers by default and goes deep only when asked", async () => {
+  searchArgs.length = 0;
+  await toolMap.get("search_messages")!.handler({ account: "rw", query: "invoice" }, ctx);
+  await toolMap.get("search_messages")!.handler({ account: "rw", query: "invoice", scope: "body" }, ctx);
+  await toolMap.get("search_messages")!.handler({ account: "rw", query: "invoice", scope: "nonsense" }, ctx);
+  assert.deepEqual(searchArgs.map((a) => a.scope), ["headers", "body", "headers"]);
+});
+
+test("messages carry a deep link into the web app when the caller's origin is known", async () => {
+  const withOrigin = { ...ctx, origin: "https://office.test" };
+  const rows = (await toolMap.get("search_messages")!.handler({ account: "rw", folder: "Archive/2026" }, withOrigin)) as any[];
+  assert.equal(rows[0].link, "https://office.test/mail/rw/Archive%2F2026/9");
+  const one = (await toolMap.get("get_message")!.handler({ account: "ro", uid: 4 }, withOrigin)) as any;
+  assert.equal(one.link, "https://office.test/mail/ro/INBOX/4");
+  assert.equal(one.text, "t");
+  const bare = (await toolMap.get("search_messages")!.handler({ account: "rw" }, ctx)) as any[];
+  assert.equal(bare[0].link, undefined);
 });

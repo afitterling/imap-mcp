@@ -138,6 +138,10 @@ export const CSS = `
   .prose code { background:var(--chip); padding:1px 5px; border-radius:5px }
   .kv { display:grid; grid-template-columns:auto 1fr auto; gap:6px 14px; align-items:center; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:8px 0 14px; font-size:13.5px }
   .kv .k { color:var(--muted) }
+  .mail-kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:13.5px } .mail-kv b { color:var(--muted); font-weight:550 }
+  .mail-body { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; margin:0; line-height:1.6 }
+  .sep { border:0; border-top:1px solid var(--line); margin:16px 0 }
+  ul.plain { list-style:none; padding:0; margin:0 } ul.plain li { margin:4px 0 }
   .hero { padding:56px 0 30px } .hero h1 { font-size:38px; line-height:1.1; margin-bottom:14px; max-width:720px }
   .hero p { font-size:17px; color:var(--muted); max-width:620px; margin:0 0 24px }
   .feature h3 { font-size:15px; margin-bottom:6px } .feature p { margin:0; color:var(--muted); font-size:13.5px }
