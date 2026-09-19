@@ -45,10 +45,14 @@ async function writableCalendar(ref: string, ctx: CallerContext, what: string): 
   return c;
 }
 
-/** Resolve an account for a mutating tool, refusing read-only ones before any network access. */
-async function writable(ref: string, ctx: CallerContext, what: string): Promise<Account> {
+/**
+ * Resolve an account for a mutating tool, refusing read-only ones before any network access.
+ * `archive` is the one exception: a read-only account whose owner switched on
+ * "allow archiving" lets archive_message through, and nothing else.
+ */
+async function writable(ref: string, ctx: CallerContext, what: string, opts: { archive?: boolean } = {}): Promise<Account> {
   const a = await resolveAccount(ref, ctx.userId);
-  if (a.readOnly) throw new ReadOnlyError(a, what);
+  if (a.readOnly && !(opts.archive && a.allowArchive === true)) throw new ReadOnlyError(a, what);
   return a;
 }
 
@@ -132,7 +136,7 @@ export const tools: Tool[] = [
     name: "list_accounts",
     title: "List mail accounts",
     description:
-      "List the caller's mail accounts, with label, email address, server settings and whether the account is read-only (readOnly: true means no tool may change or send anything on it). Call this first to learn which accounts exist.",
+      "List the caller's mail accounts, with label, email address, server settings and whether the account is read-only (readOnly: true means no tool may change or send anything on it, except archive_message when allowArchive is also true). Call this first to learn which accounts exist.",
     inputSchema: { type: "object", properties: {} },
     mutating: false,
     handler: async (_a, ctx) => (await listAccounts(ctx.userId)).map(redact),
@@ -452,7 +456,7 @@ export const tools: Tool[] = [
     },
     mutating: true,
     handler: async (a, ctx) =>
-      mail.archiveMessages(await writable(a.account, ctx, "archiving"), a.folder ?? "INBOX", a.uids, a.target),
+      mail.archiveMessages(await writable(a.account, ctx, "archiving", { archive: true }), a.folder ?? "INBOX", a.uids, a.target),
   },
   {
     name: "move_message",

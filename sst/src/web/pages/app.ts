@@ -192,6 +192,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
       <div><label>SMTP password</label><input name="smtpPassword" id="smtpPassword" type="password" placeholder="defaults to IMAP password"></div>
     </div>
     <label class="inline mt16"><input type="checkbox" name="readOnly" id="readOnly"> Read-only: Claude may read but never change, draft or send</label>
+    <label class="inline"><input type="checkbox" name="allowArchive" id="allowArchive"> …but allow archiving: Claude may still move messages to the archive folder</label>
     <div class="hint">Ports 993 (IMAP) and 465 (SMTP) use implicit TLS. Port 587 is sent as STARTTLS automatically.</div>
     <div class="status" id="formStatus"></div>
   </div>
@@ -268,12 +269,13 @@ async function loadAccounts() {
   const el = $('accounts');
   if (!accounts.length) { el.innerHTML = '<div class="empty">No mail accounts yet.<br>Add one and Claude can read (and, with your approval, send) mail from it.</div>'; return; }
   el.innerHTML = accounts.map(a => \`<div class="item"><div class="grow">
-      <h3>\${esc(a.label)} \${a.readOnly ? '<span class="chip warn">read-only</span>' : ''}</h3>
+      <h3>\${esc(a.label)} \${a.readOnly ? '<span class="chip warn">read-only</span>' : ''}\${a.readOnly && a.allowArchive ? '<span class="chip">archive allowed</span>' : ''}</h3>
       <div class="meta">\${esc(a.email)}</div>
       <div class="chips"><span class="chip">IMAP \${esc(a.imap.host)}:\${a.imap.port}</span><span class="chip">SMTP \${esc(a.smtp.host)}:\${a.smtp.port}</span></div>
       <div class="status" id="s-\${a.accountId}"></div>
     </div><div class="row">
       <label class="toggle"><input type="checkbox" data-ro="\${a.accountId}" \${a.readOnly ? 'checked' : ''}> Read-only</label>
+      <label class="toggle" title="Lets Claude archive mail even while the account is read-only"><input type="checkbox" data-aa="\${a.accountId}" \${a.allowArchive ? 'checked' : ''}> Allow archiving</label>
       <button data-test="\${a.accountId}">Test</button>
       <button data-edit="\${a.accountId}">Edit</button>
       <button class="danger" data-del="\${a.accountId}" data-label="\${esc(a.label)}">Delete</button>
@@ -281,6 +283,10 @@ async function loadAccounts() {
   el.querySelectorAll('[data-ro]').forEach(cb => cb.addEventListener('change', async () => {
     try { await api('/api/accounts/' + cb.dataset.ro + '/readonly', { method: 'POST', body: { readOnly: cb.checked } }); loadAccounts(); }
     catch (e) { status('s-' + cb.dataset.ro, e.message, 'bad'); cb.checked = !cb.checked; }
+  }));
+  el.querySelectorAll('[data-aa]').forEach(cb => cb.addEventListener('change', async () => {
+    try { await api('/api/accounts/' + cb.dataset.aa + '/allow-archive', { method: 'POST', body: { allowArchive: cb.checked } }); loadAccounts(); }
+    catch (e) { status('s-' + cb.dataset.aa, e.message, 'bad'); cb.checked = !cb.checked; }
   }));
   el.querySelectorAll('[data-test]').forEach(b => b.addEventListener('click', () => test(b.dataset.test)));
   el.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => edit(accounts.find(a => a.accountId === b.dataset.edit))));
@@ -300,7 +306,7 @@ function edit(a) {
   $('label').value = a.label; $('email').value = a.email;
   $('imapHost').value = a.imap.host; $('imapPort').value = a.imap.port; $('imapUser').value = a.imap.user;
   $('smtpHost').value = a.smtp.host; $('smtpPort').value = a.smtp.port; $('smtpUser').value = a.smtp.user;
-  $('readOnly').checked = !!a.readOnly; $('imapPassword').placeholder = 'leave blank to keep current';
+  $('readOnly').checked = !!a.readOnly; $('allowArchive').checked = !!a.allowArchive; $('imapPassword').placeholder = 'leave blank to keep current';
 }
 async function del(id, label) {
   if (!confirm('Remove "' + label + '"? Claude will lose access to this mailbox and its credentials are deleted.')) return;
@@ -319,7 +325,7 @@ $('testBtn').addEventListener('click', async () => {
 });
 $('form').addEventListener('submit', async (e) => {
   e.preventDefault(); status('formStatus', 'Saving…'); $('saveBtn').disabled = true;
-  const data = Object.fromEntries(new FormData($('form'))); data.readOnly = $('readOnly').checked;
+  const data = Object.fromEntries(new FormData($('form'))); data.readOnly = $('readOnly').checked; data.allowArchive = $('allowArchive').checked;
   try { await api('/api/accounts', { method: 'POST', body: data }); $('dlg').close(); loadAccounts(); }
   catch (err) { status('formStatus', err.message, 'bad'); }
   $('saveBtn').disabled = false;

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import { type Env, jsonBody, bad, ip, ua, HttpError } from "./ctx.js";
 import { requireSigned, listSessions, deleteSessionById, destroySession, type Signed } from "../lib/sessions.js";
-import { listAccounts, getAccount, putAccount, deleteAccount, setReadOnly, redact } from "../lib/store.js";
+import { listAccounts, getAccount, putAccount, deleteAccount, setReadOnly, setAllowArchive, redact } from "../lib/store.js";
 import { testAccount, sendParkedMessage } from "../lib/mail.js";
 import { listCalendars, getCalendar, putCalendar, deleteCalendar, setCalendarReadOnly, redactCalendar } from "../lib/calstore.js";
 import { discoverCalendars, testCalendar, normalizeFeedUrl, assertPublicHost } from "../lib/calendar.js";
@@ -63,6 +63,7 @@ async function accountFromForm(b: any, ownerId: string) {
       user: String(b.smtpUser || imapUser).trim(),
     },
     readOnly: b.readOnly === true,
+    allowArchive: b.allowArchive === true,
     imapPassword: b.imapPassword || undefined,
     smtpPassword: b.smtpPassword || undefined,
     existing,
@@ -101,7 +102,7 @@ api.post("/accounts", async (c) => {
   if (isNew && !f.imapPassword) throw bad("An IMAP password is required for a new account.");
   const { existing: _e, ...input } = f;
   const account = await putAccount(input);
-  await audit({ ...who(c, s), kind: "account", action: isNew ? "account.create" : "account.update", outcome: "success", target: account.label, details: { email: account.email, imap: account.imap.host, readOnly: account.readOnly, passwordChanged: !!b.imapPassword } });
+  await audit({ ...who(c, s), kind: "account", action: isNew ? "account.create" : "account.update", outcome: "success", target: account.label, details: { email: account.email, imap: account.imap.host, readOnly: account.readOnly, allowArchive: account.allowArchive === true, passwordChanged: !!b.imapPassword } });
   return c.json(redact(account));
 });
 
@@ -113,6 +114,16 @@ api.post("/accounts/:id/readonly", async (c) => {
   await setReadOnly(a.accountId, s.user.userId, b.readOnly === true);
   await audit({ ...who(c, s), kind: "account", action: "account.readonly", outcome: "success", target: a.label, details: { readOnly: b.readOnly === true } });
   return c.json({ ok: true, readOnly: b.readOnly === true });
+});
+
+api.post("/accounts/:id/allow-archive", async (c) => {
+  const s = await requireSigned(c);
+  const a = await getAccount(c.req.param("id"), s.user.userId);
+  if (!a) throw new HttpError(404, "No such account.");
+  const b = await jsonBody(c);
+  await setAllowArchive(a.accountId, s.user.userId, b.allowArchive === true);
+  await audit({ ...who(c, s), kind: "account", action: "account.allow-archive", outcome: "success", target: a.label, details: { allowArchive: b.allowArchive === true } });
+  return c.json({ ok: true, allowArchive: b.allowArchive === true });
 });
 
 api.delete("/accounts/:id", async (c) => {

@@ -16,6 +16,8 @@ export type Account = {
   smtp: Endpoint;
   /** Claude may read but never change, send from, or draft in this mailbox. */
   readOnly: boolean;
+  /** Exception to readOnly: Claude may still archive messages (move them to the archive folder). */
+  allowArchive?: boolean;
   createdAt: string;
   /** Encrypted blobs — never leave the server. */
   imapPass?: string;
@@ -27,7 +29,7 @@ export type PublicAccount = Omit<Account, "imapPass" | "smtpPass" | "ownerId">;
 
 export function redact(a: Account): PublicAccount {
   const { imapPass: _i, smtpPass: _s, ownerId: _o, ...rest } = a;
-  return { ...rest, readOnly: a.readOnly === true };
+  return { ...rest, readOnly: a.readOnly === true, allowArchive: a.allowArchive === true };
 }
 
 export async function listAccounts(ownerId: string): Promise<Account[]> {
@@ -80,7 +82,7 @@ export async function resolveAccount(ref: string, ownerId: string): Promise<Acco
 }
 
 export async function putAccount(
-  input: Omit<Account, "createdAt" | "readOnly"> & { imapPassword?: string; smtpPassword?: string; readOnly?: boolean },
+  input: Omit<Account, "createdAt" | "readOnly" | "allowArchive"> & { imapPassword?: string; smtpPassword?: string; readOnly?: boolean; allowArchive?: boolean },
 ): Promise<Account> {
   const existing = await getAccount(input.accountId, input.ownerId);
   const account: Account = {
@@ -91,6 +93,7 @@ export async function putAccount(
     imap: input.imap,
     smtp: input.smtp,
     readOnly: input.readOnly ?? existing?.readOnly ?? false,
+    allowArchive: input.allowArchive ?? existing?.allowArchive ?? false,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
     // Keep the stored secret when the form leaves the password field blank.
     imapPass: input.imapPassword ? encrypt(input.imapPassword) : existing?.imapPass,
@@ -116,6 +119,18 @@ export async function setReadOnly(accountId: string, ownerId: string, readOnly: 
       UpdateExpression: "SET readOnly = :r",
       ConditionExpression: "ownerId = :o",
       ExpressionAttributeValues: { ":r": readOnly, ":o": ownerId },
+    }),
+  );
+}
+
+export async function setAllowArchive(accountId: string, ownerId: string, allowArchive: boolean): Promise<void> {
+  await doc.send(
+    new UpdateCommand({
+      TableName: TABLE(),
+      Key: { accountId },
+      UpdateExpression: "SET allowArchive = :r",
+      ConditionExpression: "ownerId = :o",
+      ExpressionAttributeValues: { ":r": allowArchive, ":o": ownerId },
     }),
   );
 }
