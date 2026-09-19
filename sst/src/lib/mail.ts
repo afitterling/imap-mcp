@@ -66,26 +66,43 @@ export async function listFolders(a: Account) {
   });
 }
 
+/**
+ * Where `query` is looked for. "headers" matches subject, sender and recipients — cheap
+ * on the server and what "find the mail from Anna about the invoice" needs. "body" is the
+ * deep search: any text in headers or body, which on a large folder takes the server a while.
+ */
+export type SearchScope = "headers" | "body";
+
 export type SearchArgs = {
   folder?: string;
   query?: string;
+  scope?: SearchScope;
   from?: string;
   unseen?: boolean;
   since?: string;
   limit?: number;
 };
 
+/** The IMAP SEARCH criteria for a request. Pure, so it can be tested without a server. */
+export function searchCriteria(args: SearchArgs): Record<string, unknown> {
+  const criteria: Record<string, unknown> = {};
+  if (args.query) {
+    const q = args.query;
+    criteria.or = args.scope === "body" ? [{ subject: q }, { from: q }, { to: q }, { body: q }] : [{ subject: q }, { from: q }, { to: q }];
+  }
+  if (args.from) criteria.from = args.from;
+  if (args.unseen) criteria.seen = false;
+  if (args.since) criteria.since = new Date(args.since);
+  if (Object.keys(criteria).length === 0) criteria.all = true;
+  return criteria;
+}
+
 export async function searchMessages(a: Account, args: SearchArgs) {
   const limit = Math.min(args.limit ?? 20, 100);
   return withImap(a, async (c) => {
     const lock = await c.getMailboxLock(args.folder ?? "INBOX", { readOnly: true });
     try {
-      const criteria: Record<string, unknown> = {};
-      if (args.query) criteria.or = [{ subject: args.query }, { body: args.query }];
-      if (args.from) criteria.from = args.from;
-      if (args.unseen) criteria.seen = false;
-      if (args.since) criteria.since = new Date(args.since);
-      if (Object.keys(criteria).length === 0) criteria.all = true;
+      const criteria = searchCriteria(args);
 
       const uids = await c.search(criteria, { uid: true });
       if (!uids || uids.length === 0) return [];
@@ -101,6 +118,7 @@ export async function searchMessages(a: Account, args: SearchArgs) {
           from: msg.envelope?.from?.map((x) => `${x.name ?? ""} <${x.address}>`.trim()).join(", "),
           to: msg.envelope?.to?.map((x) => x.address).join(", "),
           date: toIso(msg.envelope?.date),
+          messageId: msg.envelope?.messageId,
           seen: msg.flags?.has("\\Seen") ?? false,
           flagged: msg.flags?.has("\\Flagged") ?? false,
           size: msg.size,

@@ -75,7 +75,8 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
 
       <h3 id="mail-what">What Claude can do with it</h3>
       <ul>
-        <li><b>Search and read</b> — folders, subject/body/sender/date search, full messages, attachment download (images shown inline, other files as attachments; 4 MB each).</li>
+        <li><b>Search and read</b> — folders, search by subject, sender, recipient and date (the default, fast) or deep inside the message text (<code>scope: body</code>, slower on big folders), full messages, attachment download (images shown inline, other files as attachments; 4 MB each).</li>
+        <li><b>Link</b> — every message Claude finds comes with a link of the form <code>…/mail/&lt;account&gt;/&lt;folder&gt;/&lt;uid&gt;</code>. Put it in a to-do, a note or a calendar entry: tapping it opens that one message here in the app (after sign-in, if needed). Only the account's owner can open it; everyone else sees “not found”.</li>
         <li><b>Draft</b> — writes into your Drafts folder; you open it in Mail.app, edit and send yourself.</li>
         <li><b>Send</b> — by default Claude cannot send. It composes, parks the mail in Drafts and adds it to your <b>Outbox</b>; see below. The same goes for a draft you wrote yourself in Mail.app: “send my draft to Anna” queues it for your approval.</li>
         <li><b>File</b> — archive, move between folders, flag/unflag, mark read/unread, create folders. Deleting folders needs your explicit confirmation.</li>

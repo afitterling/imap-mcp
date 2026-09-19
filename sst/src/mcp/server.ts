@@ -43,13 +43,19 @@ const INSTRUCTIONS = [
   "'confirm' refuse a matching call until you re-call it with guardrails_ack listing the rule ids — do that",
   "only after you have actually followed the rule. Rules marked 'block' cannot be overridden.",
   "",
+  "LINKS: every message from search_messages and get_message carries a `link` that opens exactly that mail",
+  "in the WebMail / Private Office web app (sign-in required, the user's own session). Whenever you put a",
+  "mail somewhere the user will come back to — a to-do, a calendar note, a summary, a reminder — include",
+  "that link so one tap shows the message. Search headers first (the default scope); switch to scope=body",
+  "only when the subject, sender and recipients did not turn it up.",
+  "",
   "Every tool call is recorded in the user's activity log. Deleting messages and folders is visible to",
   "other people and often irreversible — confirm with the user before flagging a message \\Deleted or",
   "calling delete_folder.",
 ].join(" ");
 
 /** The few arguments worth keeping in the audit trail. Never bodies, never attachments. */
-const AUDITED_ARGS = ["account", "calendar", "folder", "uid", "uids", "to", "cc", "bcc", "subject", "summary", "start", "end", "target", "path", "query", "from", "add", "remove", "markSeen", "limit", "rrule"];
+const AUDITED_ARGS = ["account", "calendar", "folder", "uid", "uids", "to", "cc", "bcc", "subject", "summary", "start", "end", "target", "path", "query", "scope", "from", "add", "remove", "markSeen", "limit", "rrule"];
 const CALENDAR_TOOLS = new Set(["list_calendars", "list_events", "get_event", "create_event", "update_event", "delete_event"]);
 
 function summarizeArgs(args: Record<string, unknown> | undefined): Record<string, string | number | boolean> {

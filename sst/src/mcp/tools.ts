@@ -6,6 +6,7 @@ import { requireApproval } from "../lib/settings.js";
 import { listCalendars, resolveCalendar, redactCalendar, isReadOnly, type CalendarSource } from "../lib/calstore.js";
 import * as cal from "../lib/calendar.js";
 import { listGuardrails } from "../lib/guardrails.js";
+import { withLink } from "../lib/links.js";
 
 /** Who is calling, as established by the HTTP layer. Every tool is scoped to `userId`. */
 export type CallerContext = {
@@ -15,6 +16,8 @@ export type CallerContext = {
   tokenId: string;
   client?: string;
   ip?: string;
+  /** The server's own https origin, so results can carry links into the web app. */
+  origin?: string;
 };
 
 export type Tool = {
@@ -146,13 +149,18 @@ export const tools: Tool[] = [
     name: "search_messages",
     title: "Search messages",
     description:
-      "Search a folder and return message headers (uid, subject, from, date, read state). Combine filters freely; with no filters it returns the most recent messages.",
+      "Search a folder and return message headers (uid, subject, from, date, read state) plus a `link` that opens the message in the web app — use that link whenever you refer to a mail somewhere the user will click (a to-do, a note, a summary). Combine filters freely; with no filters it returns the most recent messages. Search headers first (the default); only widen to scope=body when the headers did not find it.",
     inputSchema: {
       type: "object",
       properties: {
         account,
         folder: { type: "string", description: "Folder path, default INBOX." },
-        query: { type: "string", description: "Text to match in subject or body." },
+        query: { type: "string", description: "Text to look for. Where depends on `scope`." },
+        scope: {
+          type: "string",
+          enum: ["headers", "body"],
+          description: 'Where `query` is matched. "headers" (default): subject, sender and recipients only — fast. "body": the deep search, also inside the message text — slower on big folders. Start with headers.',
+        },
         from: { type: "string", description: "Match the sender address." },
         unseen: { type: "boolean", description: "Only unread messages." },
         since: { type: "string", description: "Only messages on or after this date (ISO 8601)." },
@@ -161,12 +169,16 @@ export const tools: Tool[] = [
       required: ["account"],
     },
     mutating: false,
-    handler: async (a, ctx) => mail.searchMessages(await resolveAccount(a.account, ctx.userId), a),
+    handler: async (a, ctx) => {
+      const acct = await resolveAccount(a.account, ctx.userId);
+      const rows = await mail.searchMessages(acct, { ...a, scope: a.scope === "body" ? "body" : "headers" });
+      return rows.map((r) => withLink(ctx.origin, acct.accountId, r));
+    },
   },
   {
     name: "get_message",
     title: "Read a message",
-    description: "Fetch the full body, headers and attachment list of one message by uid.",
+    description: "Fetch the full body, headers and attachment list of one message by uid. The result's `link` opens this message in the web app.",
     inputSchema: {
       type: "object",
       properties: {
@@ -183,7 +195,7 @@ export const tools: Tool[] = [
       const acct = markSeen
         ? await writable(a.account, ctx, "marking a message read")
         : await resolveAccount(a.account, ctx.userId);
-      return mail.getMessage(acct, a.folder ?? "INBOX", a.uid, markSeen);
+      return withLink(ctx.origin, acct.accountId, await mail.getMessage(acct, a.folder ?? "INBOX", a.uid, markSeen));
     },
   },
   {

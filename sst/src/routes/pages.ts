@@ -13,7 +13,10 @@ import { getClient, createGrant, issueCode } from "../lib/oauth.js";
 import { hit, LIMITS } from "../lib/ratelimit.js";
 import { audit, ANONYMOUS } from "../lib/audit.js";
 import { alertUser, alertEveryone, requestContext } from "../lib/notify.js";
-import { claimOrphanAccounts } from "../lib/store.js";
+import { claimOrphanAccounts, resolveAccount } from "../lib/store.js";
+import { getMessage } from "../lib/mail.js";
+import { messagePage } from "../web/pages/message.js";
+import { MESSAGE_PATH } from "../lib/links.js";
 
 export const pages = new Hono<Env>();
 
@@ -169,3 +172,36 @@ pages.get("/app", async (c) => {
 });
 
 pages.get("/admin", (c) => c.redirect("/app"));
+
+/**
+ * Where a message deep link lands (see lib/links.ts). Signed out, the person goes through
+ * sign-in and comes straight back here. The account is resolved only among the signed-in
+ * user's own accounts, so a link to somebody else's mail shows nothing but "not found".
+ */
+pages.get(`${MESSAGE_PATH}/:account/:folder/:uid`, async (c) => {
+  const s = await getSigned(c);
+  if (!s) {
+    const here = new URL(c.req.url).pathname;
+    return c.redirect((await mfaPending(c)) ? "/setup-mfa" : `/login?next=${encodeURIComponent(here)}`);
+  }
+  const uid = Number(c.req.param("uid"));
+  const folder = c.req.param("folder");
+  if (!Number.isInteger(uid) || uid <= 0 || !folder) return c.text("Not found", 404);
+
+  let account;
+  try {
+    account = await resolveAccount(c.req.param("account"), s.user.userId);
+  } catch {
+    return c.text("Not found", 404);
+  }
+  try {
+    const m = await getMessage(account, folder, uid, false);
+    await audit({ userId: s.user.userId, kind: "account", action: "mail.view", outcome: "success", target: account.label, details: { folder, uid }, ip: ip(c), ua: ua(c) });
+    return c.html(messagePage(c.get("nonce"), publicUser(s.user), m, { label: account.label, email: account.email }));
+  } catch (err) {
+    await audit({ userId: s.user.userId, kind: "account", action: "mail.view", outcome: "failure", target: account.label, details: { folder, uid }, ip: ip(c), ua: ua(c) });
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(msg) ? 404 : 502;
+    return c.text(status === 404 ? `No message with uid ${uid} in ${folder}. Message ids are per folder; it may have been moved.` : msg, status);
+  }
+});
