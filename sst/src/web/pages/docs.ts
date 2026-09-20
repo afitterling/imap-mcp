@@ -80,7 +80,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>Draft</b> — writes into your Drafts folder; you open it in Mail.app, edit and send yourself.</li>
         <li><b>Send</b> — by default Claude cannot send. It composes, parks the mail in Drafts and adds it to your <b>Outbox</b>; see below. The same goes for a draft you wrote yourself in Mail.app: “send my draft to Anna” queues it for your approval.</li>
         <li><b>File</b> — archive, move between folders, flag/unflag, mark read/unread, create folders. Deleting folders needs your explicit confirmation.</li>
-        <li><b>Nothing at all beyond reading</b> when the account is read-only — including marking a message as read.</li>
+        <li><b>Nothing at all beyond reading</b> when the account is read-only — including marking a message as read. The one exception you can grant is <b>Allow archiving</b> on the account card: Claude may then move messages to the archive folder, and still nothing else.</li>
       </ul>
 
       <h3 id="mail-outbox">The Outbox</h3>

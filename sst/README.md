@@ -83,7 +83,7 @@ There is no shared token and no `?token=` query parameter any more.
 ## Tools exposed to Claude
 
 Every tool is scoped to the calling user's accounts; accounts are referenced by label,
-email or id. `list_accounts` reports `readOnly`.
+email or id. `list_accounts` reports `readOnly` and `allowArchive` (a read-only account that still lets Claude archive).
 
 | Tool | Does | Read-only account |
 |---|---|---|
@@ -96,7 +96,7 @@ email or id. `list_accounts` reports `readOnly`.
 | `send_message` | Compose; parked in Drafts and queued for approval (or sent directly if the user allowed it) | refused |
 | `send_draft` | Queue an existing draft (written in the mail client or by `create_draft`) for approval, recipients from the draft | refused |
 | `list_guardrails` | The user's guardrails (see below) | ✓ |
-| `archive_message` | Move to the archive folder, auto-detected | refused |
+| `archive_message` | Move to the archive folder, auto-detected | refused, unless the account's **Allow archiving** switch is on |
 | `move_message` | Move to any folder | refused |
 | `flag_message` | Add/remove IMAP flags | refused |
 | `create_folder` | Create a folder | refused |

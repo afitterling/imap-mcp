@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 const accounts: Record<string, any> = {
   ro: { accountId: "ro", ownerId: "u1", label: "Locked", email: "l@x.y", imap: {}, smtp: {}, readOnly: true },
   rw: { accountId: "rw", ownerId: "u1", label: "Open", email: "o@x.y", imap: {}, smtp: {}, readOnly: false },
+  roa: { accountId: "roa", ownerId: "u1", label: "Locked but archivable", email: "a@x.y", imap: {}, smtp: {}, readOnly: true, allowArchive: true },
 };
 const calls: string[] = [];
 const searchArgs: any[] = [];
@@ -110,6 +111,19 @@ test("read tools work on a read-only account", async () => {
   }
 });
 
+test("allowArchive lets archive_message through on a read-only account, and nothing else", async () => {
+  calls.length = 0;
+  await toolMap.get("archive_message")!.handler({ account: "roa", uids: [1] }, ctx);
+  assert.deepEqual(calls, ["archiveMessages"]);
+  for (const [name, args] of Object.entries(MUTATING)) {
+    if (name === "archive_message") continue;
+    calls.length = 0;
+    await assert.rejects(toolMap.get(name)!.handler({ account: "roa", ...args }, ctx), ReadOnlyError, name);
+    assert.deepEqual(calls, [], `${name} reached the mail layer`);
+  }
+  await assert.rejects(toolMap.get("get_message")!.handler({ account: "roa", uid: 1, markSeen: true }, ctx), ReadOnlyError);
+});
+
 test("get_message with markSeen is a write and is refused on read-only", async () => {
   await assert.rejects(toolMap.get("get_message")!.handler({ account: "ro", uid: 1, markSeen: true }, ctx), ReadOnlyError);
   await toolMap.get("get_message")!.handler({ account: "rw", uid: 1, markSeen: true }, ctx);
@@ -117,7 +131,7 @@ test("get_message with markSeen is a write and is refused on read-only", async (
 
 test("list_accounts is scoped to the caller and exposes readOnly", async () => {
   const mine = (await toolMap.get("list_accounts")!.handler({}, ctx)) as any[];
-  assert.deepEqual(mine.map((a) => [a.accountId, a.readOnly]), [["ro", true], ["rw", false]]);
+  assert.deepEqual(mine.map((a) => [a.accountId, a.readOnly, a.allowArchive === true]), [["ro", true, false], ["rw", false, false], ["roa", true, true]]);
   assert.deepEqual(await toolMap.get("list_accounts")!.handler({}, { ...ctx, userId: "u2" }), []);
   await assert.rejects(toolMap.get("list_folders")!.handler({ account: "rw" }, { ...ctx, userId: "u2" }), /No mail account/);
 });
