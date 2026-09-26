@@ -8,6 +8,7 @@ import { listCalendars, getCalendar, putCalendar, deleteCalendar, setCalendarRea
 import { discoverCalendars, testCalendar, normalizeFeedUrl, assertPublicHost } from "../lib/calendar.js";
 import { requireApproval, setRequireApproval } from "../lib/settings.js";
 import { listPending, getPending, dropPending } from "../lib/outbox.js";
+import { noteReply, forgetAccountReplies } from "../lib/replies.js";
 import { createToken, listTokens, revokeToken } from "../lib/tokens.js";
 import { listGrants, revokeGrant } from "../lib/oauth.js";
 import { audit, forUser, toCsv, type AuditKind } from "../lib/audit.js";
@@ -131,7 +132,8 @@ api.delete("/accounts/:id", async (c) => {
   const a = await getAccount(c.req.param("id"), s.user.userId);
   if (!a) throw new HttpError(404, "No such account.");
   await deleteAccount(a.accountId, s.user.userId);
-  await audit({ ...who(c, s), kind: "account", action: "account.delete", outcome: "success", target: a.label, details: { email: a.email } });
+  const replies = await forgetAccountReplies(s.user.userId, a.accountId);
+  await audit({ ...who(c, s), kind: "account", action: "account.delete", outcome: "success", target: a.label, details: { email: a.email, replyLogRows: replies } });
   return c.json({ ok: true });
 });
 
@@ -360,6 +362,7 @@ api.post("/outbox/:id/approve", async (c) => {
     const result = await sendParkedMessage(account, pending.folder, pending.uid, recipients);
     await dropPending(pending.id);
     await audit({ ...who(c, s), kind: "outbox", action: "outbox.approve", outcome: "success", target: pending.accountLabel, details: { to: pending.to, subject: pending.subject, filedIn: result.filedIn } });
+    await noteReply(account, s.user.userId, { inReplyTo: pending.inReplyTo, replyMessageId: result.messageId, subject: pending.subject, to: pending.to, via: "outbox" });
     return c.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

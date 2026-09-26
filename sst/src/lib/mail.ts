@@ -78,31 +78,147 @@ export type SearchArgs = {
   query?: string;
   scope?: SearchScope;
   from?: string;
+  to?: string;
+  subject?: string;
+  /** Legacy shorthand for seen=false. */
   unseen?: boolean;
+  /** System flags: true = has the flag, false = does not. Omitted = either. */
+  seen?: boolean;
+  answered?: boolean;
+  flagged?: boolean;
+  draft?: boolean;
+  deleted?: boolean;
+  /** The $Forwarded keyword most clients set when a message is forwarded. */
+  forwarded?: boolean;
+  /** Keywords (custom IMAP flags such as $Junk, $label1, "Work") the message must carry. */
+  keyword?: string | string[];
+  /** Keywords the message must not carry. */
+  notKeyword?: string | string[];
   since?: string;
+  before?: string;
+  larger?: number;
+  smaller?: number;
   limit?: number;
 };
 
-/** The IMAP SEARCH criteria for a request. Pure, so it can be tested without a server. */
-export function searchCriteria(args: SearchArgs): Record<string, unknown> {
+export const FORWARDED = "$Forwarded";
+
+/** The five settable RFC 9051 system flags, keyed by the search/result field that stands for them. */
+const SYSTEM_FLAGS = { seen: "\\Seen", answered: "\\Answered", flagged: "\\Flagged", draft: "\\Draft", deleted: "\\Deleted" } as const;
+type SystemFlag = keyof typeof SYSTEM_FLAGS;
+
+/** "\\answered" → "answered", so a system flag given as a keyword becomes the matching boolean. */
+function systemFlagName(flag: string): SystemFlag | undefined {
+  const hit = Object.entries(SYSTEM_FLAGS).find(([, f]) => f.toLowerCase() === flag.trim().toLowerCase());
+  return hit?.[0] as SystemFlag | undefined;
+}
+
+/** An IMAP flag-keyword is an atom: no spaces, parentheses, quotes, wildcards or backslashes. */
+const KEYWORD = /^[^\s(){%*"\\\]]+$/;
+
+function keywordList(v: string | string[] | undefined): string[] {
+  const list = v === undefined ? [] : Array.isArray(v) ? v : [v];
+  return list.map((k) => String(k).trim()).filter(Boolean);
+}
+
+function dateArg(name: string, v: string): Date {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) throw new Error(`\`${name}\` is not a date: "${v}". Use ISO 8601, e.g. 2026-09-01.`);
+  return d;
+}
+
+/**
+ * The IMAP SEARCH criteria for a request. Pure, so it can be tested without a server.
+ *
+ * `usable` says whether a keyword can exist in the folder at all (the mailbox's FLAGS and
+ * PERMANENTFLAGS). imapflow silently drops a KEYWORD it thinks the folder cannot hold, which
+ * would turn "only $Junk" into "everything" — so such a filter is resolved here instead:
+ * requiring it matches nothing (null), excluding it matches everything.
+ */
+export function searchCriteria(args: SearchArgs, usable: (keyword: string) => boolean = () => true): Record<string, unknown> | null {
   const criteria: Record<string, unknown> = {};
   if (args.query) {
     const q = args.query;
     criteria.or = args.scope === "body" ? [{ subject: q }, { from: q }, { to: q }, { body: q }] : [{ subject: q }, { from: q }, { to: q }];
   }
   if (args.from) criteria.from = args.from;
-  if (args.unseen) criteria.seen = false;
-  if (args.since) criteria.since = new Date(args.since);
+  if (args.to) criteria.to = args.to;
+  if (args.subject) criteria.subject = args.subject;
+
+  const flags: Partial<Record<SystemFlag, boolean>> = {
+    seen: args.seen ?? (args.unseen ? false : undefined),
+    answered: args.answered,
+    flagged: args.flagged,
+    draft: args.draft,
+    deleted: args.deleted,
+  };
+  const keywords: { keyword: string; has: boolean }[] = [];
+  if (typeof args.forwarded === "boolean") keywords.push({ keyword: FORWARDED, has: args.forwarded });
+  for (const [list, has] of [[keywordList(args.keyword), true], [keywordList(args.notKeyword), false]] as const) {
+    for (const k of list) {
+      const system = systemFlagName(k);
+      if (system) {
+        if (flags[system] !== undefined && flags[system] !== has) return null; // asked for both with and without
+        flags[system] = has;
+        continue;
+      }
+      if (k.startsWith("\\") || !KEYWORD.test(k)) throw new Error(`"${k}" is not a valid IMAP keyword. Keywords are single words like $Forwarded, $Junk or Work; system flags are \\Seen, \\Answered, \\Flagged, \\Draft, \\Deleted.`);
+      keywords.push({ keyword: k, has });
+    }
+  }
+  for (const [name, v] of Object.entries(flags)) if (typeof v === "boolean") criteria[name] = v;
+
+  const live: typeof keywords = [];
+  for (const k of keywords) {
+    if (usable(k.keyword)) live.push(k);
+    else if (k.has) return null;
+  }
+  if (live.length) {
+    // One KEYWORD/UNKEYWORD key per object, so the rest are ANDed in as NOT (OR of their negations).
+    const [first, ...rest] = live;
+    criteria[first.has ? "keyword" : "unKeyword"] = first.keyword;
+    const negated = rest.map((k) => ({ [k.has ? "unKeyword" : "keyword"]: k.keyword }));
+    if (negated.length) criteria.not = negated.length === 1 ? negated[0] : { or: negated };
+  }
+
+  if (args.since) criteria.since = dateArg("since", args.since);
+  if (args.before) criteria.before = dateArg("before", args.before);
+  if (typeof args.larger === "number") criteria.larger = args.larger;
+  if (typeof args.smaller === "number") criteria.smaller = args.smaller;
   if (Object.keys(criteria).length === 0) criteria.all = true;
   return criteria;
 }
 
+/** A message's flags as named fields; anything that is not a system flag is a keyword. */
+export function describeFlags(flags: Set<string> | undefined) {
+  const set = flags ?? new Set<string>();
+  const has = (f: string) => [...set].some((x) => x.toLowerCase() === f.toLowerCase());
+  const keywords = [...set].filter((f) => !f.startsWith("\\"));
+  return {
+    seen: has("\\Seen"),
+    answered: has("\\Answered"),
+    flagged: has("\\Flagged"),
+    draft: has("\\Draft"),
+    deleted: has("\\Deleted"),
+    forwarded: has(FORWARDED),
+    ...(keywords.length ? { keywords } : {}),
+  };
+}
+
+/** Mirrors imapflow's own check, so a keyword we keep is one it will actually send. */
+function keywordUsable(box: { flags?: Set<string>; permanentFlags?: Set<string> } | false | undefined) {
+  return (k: string) => !box || !box.permanentFlags || box.permanentFlags.has("\\*") || box.permanentFlags.has(k) || !!box.flags?.has(k);
+}
+
 export async function searchMessages(a: Account, args: SearchArgs) {
   const limit = Math.min(args.limit ?? 20, 100);
+  // Validate the filters before opening a connection.
+  searchCriteria(args);
   return withImap(a, async (c) => {
     const lock = await c.getMailboxLock(args.folder ?? "INBOX", { readOnly: true });
     try {
-      const criteria = searchCriteria(args);
+      const criteria = searchCriteria(args, keywordUsable(c.mailbox));
+      if (!criteria) return [];
 
       const uids = await c.search(criteria, { uid: true });
       if (!uids || uids.length === 0) return [];
@@ -119,8 +235,7 @@ export async function searchMessages(a: Account, args: SearchArgs) {
           to: msg.envelope?.to?.map((x) => x.address).join(", "),
           date: toIso(msg.envelope?.date),
           messageId: msg.envelope?.messageId,
-          seen: msg.flags?.has("\\Seen") ?? false,
-          flagged: msg.flags?.has("\\Flagged") ?? false,
+          ...describeFlags(msg.flags),
           size: msg.size,
         });
       }
@@ -128,6 +243,61 @@ export async function searchMessages(a: Account, args: SearchArgs) {
     } finally {
       lock.release();
     }
+  });
+}
+
+/** Which flags a folder uses and which it will store — answers "can I tag this with X?". */
+export async function folderFlags(a: Account, folder: string) {
+  return withImap(a, async (c) => {
+    const lock = await c.getMailboxLock(folder, { readOnly: true });
+    try {
+      const box = c.mailbox || undefined;
+      const inUse = [...(box?.flags ?? [])];
+      const permanent = box?.permanentFlags ? [...box.permanentFlags] : undefined;
+      return {
+        folder,
+        systemFlags: inUse.filter((f) => f.startsWith("\\")),
+        keywords: inUse.filter((f) => !f.startsWith("\\")),
+        permanentFlags: permanent,
+        // "\\*" in PERMANENTFLAGS (or no list at all) means any new keyword may be stored.
+        customKeywordsAllowed: !permanent || permanent.includes("\\*"),
+      };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** First <id> in a Message-ID / In-Reply-To value, with its angle brackets. */
+export function firstMessageId(value: string | undefined | null): string | undefined {
+  if (!value) return undefined;
+  const bracketed = value.match(/<[^<>\s]+>/);
+  if (bracketed) return bracketed[0];
+  const bare = value.trim().split(/\s+/)[0];
+  return bare ? `<${bare}>` : undefined;
+}
+
+/**
+ * Set \\Answered on the message a reply went to, so every mail client (and the `answered`
+ * search filter) shows it as replied. Looks in the given folders by Message-ID header; best
+ * effort — the message may have been moved or deleted since.
+ */
+export async function markAnswered(a: Account, messageId: string, folders: string[] = ["INBOX"]) {
+  return withImap(a, async (c) => {
+    for (const folder of folders) {
+      const lock = await c.getMailboxLock(folder).catch(() => undefined);
+      if (!lock) continue;
+      try {
+        const uids = await c.search({ header: { "message-id": messageId } }, { uid: true });
+        if (uids && uids.length) {
+          await c.messageFlagsAdd(uids, ["\\Answered"], { uid: true });
+          return { folder, uids };
+        }
+      } finally {
+        lock.release();
+      }
+    }
+    return undefined;
   });
 }
 
@@ -140,6 +310,7 @@ export async function getMessage(a: Account, folder: string, uid: number, markSe
       if (!downloaded) throw new Error(`Message uid ${uid} not found in ${folder}`);
       const parsed = await simpleParser(downloaded.content);
       if (markSeen) await c.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
+      const meta = await c.fetchOne(String(uid), { flags: true }, { uid: true });
       return {
         uid,
         folder,
@@ -149,6 +320,8 @@ export async function getMessage(a: Account, folder: string, uid: number, markSe
         cc: parsed.cc && (Array.isArray(parsed.cc) ? parsed.cc.map((t) => t.text).join(", ") : parsed.cc.text),
         date: parsed.date?.toISOString(),
         messageId: parsed.messageId,
+        inReplyTo: parsed.inReplyTo,
+        ...(meta ? describeFlags(meta.flags) : {}),
         text: parsed.text,
         // Trim runaway HTML mail; the text part is what a model actually needs.
         html: typeof parsed.html === "string" ? parsed.html.slice(0, 20_000) : undefined,

@@ -24,8 +24,10 @@ const stub = (name: string) => async () => { calls.push(name); return { ok: name
 mock.module("../lib/mail.js", {
   namedExports: {
     listFolders: stub("listFolders"),
-    searchMessages: async (_a: any, args: any) => { calls.push("searchMessages"); searchArgs.push(args); return [{ uid: 9, folder: args.folder ?? "INBOX", subject: "s" }]; },
-    getMessage: async (_a: any, folder: string, uid: number) => { calls.push("getMessage"); return { uid, folder, to: "a@b.c", subject: "s", text: "t", attachments: [] }; },
+    searchMessages: async (_a: any, args: any) => { calls.push("searchMessages"); searchArgs.push(args); return [{ uid: 9, folder: args.folder ?? "INBOX", subject: "s", messageId: "<answered@x>" }, { uid: 8, folder: args.folder ?? "INBOX", subject: "s2", messageId: "<open@x>" }]; },
+    getMessage: async (_a: any, folder: string, uid: number) => { calls.push("getMessage"); return { uid, folder, to: "a@b.c", subject: "s", text: "t", attachments: [], messageId: "<answered@x>", inReplyTo: "<parent@x>" }; },
+    folderFlags: stub("folderFlags"),
+    firstMessageId: (v?: string) => (v ? (v.match(/<[^<>\s]+>/)?.[0] ?? `<${v.trim()}>`) : undefined),
     getAttachment: async () => { calls.push("getAttachment"); return { filename: "a.txt", contentType: "text/plain", size: 1, content: Buffer.from("a") }; },
     setFlags: stub("setFlags"), archiveMessages: stub("archiveMessages"), moveMessage: stub("moveMessage"),
     createFolder: stub("createFolder"), deleteFolder: stub("deleteFolder"), createDraft: stub("createDraft"), sendMessage: stub("sendMessage"),
@@ -33,7 +35,8 @@ mock.module("../lib/mail.js", {
     MAX_TOTAL_ATTACHMENT_BYTES: 1024,
   },
 });
-mock.module("../lib/settings.js", { namedExports: { requireApproval: async () => false } });
+let approval = false;
+mock.module("../lib/settings.js", { namedExports: { requireApproval: async () => approval } });
 
 const calendars: Record<string, any> = {
   open: { calendarId: "open", ownerId: "u1", label: "Work", kind: "caldav", readOnly: false },
@@ -57,7 +60,25 @@ mock.module("../lib/calendar.js", {
     listEvents: stub("listEvents"), getEvent: stub("getEvent"), createEvent: stub("createEvent"), updateEvent: stub("updateEvent"), deleteEvent: stub("deleteEvent"),
   },
 });
-mock.module("../lib/outbox.js", { namedExports: { queueSend: async () => ({ id: "p" }) } });
+const queued: any[] = [];
+mock.module("../lib/outbox.js", {
+  namedExports: {
+    queueSend: async (item: any) => { queued.push(item); return { id: "p" }; },
+    listPending: async (userId: string) => (userId === "u1" ? [{ id: "q1", accountId: "rw", accountLabel: "Open", to: "c@d.e", subject: "Re: x", createdAt: "2026-09-25T00:00:00Z", inReplyTo: "<queued@x>" }] : []),
+  },
+});
+// The reply log: "<answered@x>" on account rw was answered by u1.
+const logged = { accountId: "rw", messageId: "<answered@x>", repliedAt: "2026-09-24T10:00:00.000Z", firstRepliedAt: "2026-09-24T10:00:00.000Z", count: 1, to: "a@b.c", subject: "Re: s", via: "outbox" };
+const noted: any[] = [];
+mock.module("../lib/replies.js", {
+  namedExports: {
+    REPLY_RETENTION_DAYS: 365,
+    getReplies: async (userId: string, accountId: string, ids: (string | undefined)[]) =>
+      new Map(userId === "u1" && accountId === "rw" && ids.some((i) => i?.includes("answered@x")) ? [["<answered@x>", logged]] : []),
+    listReplies: async (userId: string) => (userId === "u1" ? [logged] : []),
+    noteReply: async (_a: any, _u: string, sent: any) => { noted.push(sent); return { recorded: !!sent.inReplyTo }; },
+  },
+});
 mock.module("../lib/guardrails.js", { namedExports: { listGuardrails: async () => [] } });
 
 const { tools, toolMap, ReadOnlyError } = await import("./tools.js");
@@ -73,7 +94,7 @@ const MUTATING: Record<string, any> = {
   create_folder: { path: "X" },
   delete_folder: { path: "X", confirm: true },
 };
-const READ: Record<string, any> = { list_folders: {}, search_messages: {}, get_message: { uid: 1 }, get_attachment: { uid: 1 } };
+const READ: Record<string, any> = { list_folders: {}, search_messages: {}, get_message: { uid: 1 }, get_attachment: { uid: 1 }, list_flags: {} };
 const CAL_MUTATING: Record<string, any> = {
   create_event: { summary: "x", start: "2026-09-14T10:00" },
   update_event: { uid: "u", summary: "y" },
@@ -84,7 +105,7 @@ const CAL_READ: Record<string, any> = { list_events: {}, get_event: { uid: "u" }
 test("every tool declares mutating and matches the expected sets", () => {
   for (const t of tools) assert.equal(typeof t.mutating, "boolean", t.name);
   assert.deepEqual(tools.filter((t) => t.mutating).map((t) => t.name).sort(), [...Object.keys(MUTATING), ...Object.keys(CAL_MUTATING)].sort());
-  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails"].sort());
+  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails", "list_replies"].sort());
 });
 
 test("mutating tools are refused on a read-only account before touching mail", async () => {
@@ -188,4 +209,61 @@ test("messages carry a deep link into the web app when the caller's origin is kn
   assert.equal(one.text, "t");
   const bare = (await toolMap.get("search_messages")!.handler({ account: "rw" }, ctx)) as any[];
   assert.equal(bare[0].link, undefined);
+});
+
+test("search results and get_message carry the logged reply, and only on the answered mail", async () => {
+  const rows = (await toolMap.get("search_messages")!.handler({ account: "rw" }, ctx)) as any[];
+  assert.equal(rows.find((r) => r.uid === 9).reply.repliedAt, "2026-09-24T10:00:00.000Z");
+  assert.equal(rows.find((r) => r.uid === 8).reply, undefined);
+  const one = (await toolMap.get("get_message")!.handler({ account: "rw", uid: 9 }, ctx)) as any;
+  assert.equal(one.reply.via, "outbox");
+  // Another user's view of the same ids finds nothing.
+  await assert.rejects(toolMap.get("search_messages")!.handler({ account: "rw" }, { ...ctx, userId: "u2" }), /No mail account/);
+});
+
+test("search_messages hands flag and keyword filters through to the mail layer", async () => {
+  searchArgs.length = 0;
+  await toolMap.get("search_messages")!.handler({ account: "rw", answered: false, seen: true, flagged: true, forwarded: false, keyword: ["Work"], notKeyword: ["$Junk"], before: "2026-10-01" }, ctx);
+  const a = searchArgs[0];
+  assert.deepEqual([a.answered, a.seen, a.flagged, a.forwarded, a.keyword, a.notKeyword, a.before], [false, true, true, false, ["Work"], ["$Junk"], "2026-10-01"]);
+});
+
+test("list_replies answers per message: replied, not replied, or waiting in the Outbox", async () => {
+  const res = (await toolMap.get("list_replies")!.handler({ account: "ro", messageIds: ["<answered@x>"] }, ctx)) as any;
+  assert.equal(res.results[0].replied, false, "the log is per account");
+  const rw = (await toolMap.get("list_replies")!.handler({ account: "rw", messageIds: ["answered@x", "<open@x>", "<queued@x>"] }, ctx)) as any;
+  assert.deepEqual(rw.results.map((r: any) => [r.messageId, r.replied, r.awaitingApproval?.approvalId]), [
+    ["<answered@x>", true, undefined],
+    ["<open@x>", false, undefined],
+    ["<queued@x>", false, "q1"],
+  ]);
+  assert.match(rw.note, /Answered/);
+  await assert.rejects(toolMap.get("list_replies")!.handler({ messageIds: ["<a@x>"] }, ctx), /Pass `account`/);
+});
+
+test("list_replies without ids lists the log with account labels, and is scoped to the caller", async () => {
+  const res = (await toolMap.get("list_replies")!.handler({}, ctx)) as any;
+  assert.deepEqual(res.replies.map((r: any) => [r.account, r.inReplyTo]), [["Open", "<answered@x>"]]);
+  assert.deepEqual(res.awaitingApproval.map((p: any) => p.inReplyTo), ["<queued@x>"]);
+  const other = (await toolMap.get("list_replies")!.handler({}, { ...ctx, userId: "u2" })) as any;
+  assert.deepEqual([other.replies, other.awaitingApproval], [[], []]);
+  await assert.rejects(toolMap.get("list_replies")!.handler({ since: "soon" }, ctx), /not a date/);
+});
+
+test("a direct send logs the reply; a queued one carries inReplyTo to the Outbox", async () => {
+  noted.length = 0; queued.length = 0;
+  const direct = (await toolMap.get("send_message")!.handler({ account: "rw", to: "a@b.c", subject: "Re: s", text: "t", inReplyTo: "<answered@x>" }, ctx)) as any;
+  assert.equal(direct.replyLogged, true);
+  assert.deepEqual(noted.map((n) => [n.inReplyTo, n.via]), [["<answered@x>", "send_message"]]);
+  await toolMap.get("send_draft")!.handler({ account: "rw", uid: 7 }, ctx);
+  assert.deepEqual(noted.at(-1)!.inReplyTo, "<parent@x>");
+  approval = true;
+  try {
+    await toolMap.get("send_message")!.handler({ account: "rw", to: "a@b.c", subject: "Re: s", text: "t", inReplyTo: "answered@x" }, ctx);
+    await toolMap.get("send_draft")!.handler({ account: "rw", uid: 7 }, ctx);
+    assert.deepEqual(queued.map((q) => q.inReplyTo), ["<answered@x>", "<parent@x>"]);
+    assert.equal(noted.length, 2, "queued mail is not logged until it is approved");
+  } finally {
+    approval = false;
+  }
 });
