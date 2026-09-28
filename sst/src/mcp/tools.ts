@@ -3,6 +3,8 @@ import * as mail from "../lib/mail.js";
 import { beautify } from "../lib/beautify.js";
 import { queueSend } from "../lib/outbox.js";
 import { requireApproval } from "../lib/settings.js";
+import { mayAutoSend } from "../lib/autoapprove.js";
+import { audit } from "../lib/audit.js";
 import { listCalendars, resolveCalendar, redactCalendar, isReadOnly, type CalendarSource } from "../lib/calstore.js";
 import * as cal from "../lib/calendar.js";
 import { listGuardrails } from "../lib/guardrails.js";
@@ -30,6 +32,23 @@ export type Tool = {
   destructive?: boolean;
   handler: (args: any, ctx: CallerContext) => Promise<unknown>;
 };
+
+const AUTO_SENT =
+  "SENT without an Outbox click: every recipient is on the user's auto-approved list for this account. Tell the user it went out and to whom.";
+
+/** Structured CloudWatch/audit record for every mail released by the auto-approved list rather than a human. */
+function auditAutoRelease(ctx: CallerContext, acct: Account, tool: string, d: { to?: string; cc?: string; bcc?: string; subject?: string }) {
+  return audit({
+    userId: ctx.userId,
+    kind: "outbox",
+    action: "outbox.auto-release",
+    outcome: "success",
+    target: acct.label,
+    details: { tool, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, auth: ctx.auth },
+    client: ctx.client,
+    ip: ctx.ip,
+  });
+}
 
 export class ReadOnlyError extends Error {
   constructor(a: { label: string }, what: string, where = "Accounts → Read-only") {
@@ -206,7 +225,7 @@ export const tools: Tool[] = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the WebMail / Private Office MCP app, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
+      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the WebMail / Private Office MCP app, which is where it is actually released. The only exception is when every recipient is on the user's own auto-approved list for that account (which only the user can edit, in the app); then the result says sent: true and autoApproved: true. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
     inputSchema: {
       type: "object",
       properties: {
@@ -234,6 +253,12 @@ export const tools: Tool[] = [
 
       if (!(await requireApproval(ctx.userId))) {
         return { ...(await mail.sendMessage(acct, args)), approvalRequired: false };
+      }
+      // Every recipient is on the user's auto-approved list for this account: no click needed.
+      if (await mayAutoSend(ctx.userId, acct.accountId, a.to, a.cc, a.bcc)) {
+        const result = await mail.sendMessage(acct, args);
+        await auditAutoRelease(ctx, acct, "send_message", { to: a.to, cc: a.cc, bcc: a.bcc, subject: a.subject });
+        return { ...result, sent: true, approvalRequired: false, autoApproved: true, message: AUTO_SENT };
       }
 
       // Park the composed message in the mailbox; only a human click releases it.
@@ -265,7 +290,7 @@ export const tools: Tool[] = [
     name: "send_draft",
     title: "Send an existing draft",
     description:
-      "Send a message that already sits in the Drafts folder (written by the user in their mail client, or by create_draft). By default this does NOT send: the draft is queued for the user to approve by hand in the app's Outbox, exactly like send_message. Give the draft's uid from search_messages on the Drafts folder. Recipients are taken from the draft itself.",
+      "Send a message that already sits in the Drafts folder (written by the user in their mail client, or by create_draft). By default this does NOT send: the draft is queued for the user to approve by hand in the app's Outbox, exactly like send_message — including the same auto-approved-recipients exception. Give the draft's uid from search_messages on the Drafts folder. Recipients are taken from the draft itself.",
     inputSchema: {
       type: "object",
       properties: {
@@ -286,6 +311,11 @@ export const tools: Tool[] = [
 
       if (!(await requireApproval(ctx.userId))) {
         return { ...(await mail.sendParkedMessage(acct, folder, a.uid, recipients)), sent: true, approvalRequired: false };
+      }
+      if (await mayAutoSend(ctx.userId, acct.accountId, to, draft.cc)) {
+        const result = await mail.sendParkedMessage(acct, folder, a.uid, recipients);
+        await auditAutoRelease(ctx, acct, "send_draft", { to, cc: draft.cc, subject: draft.subject });
+        return { ...result, sent: true, approvalRequired: false, autoApproved: true, message: AUTO_SENT };
       }
       const pending = await queueSend({
         userId: ctx.userId,
