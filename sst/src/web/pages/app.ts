@@ -41,6 +41,18 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
       <div class="hint mt8">With this on, <code>send_message</code> cannot put mail on the wire. Claude composes it, it is saved to your Drafts,
         and it goes out only when you press <b>Send now</b> below. Turning it off lets Claude send directly — the change is logged.</div>
     </div>
+    <div class="card mb12">
+      <h3>Auto-approved recipients</h3>
+      <p class="muted small">Mail Claude writes goes out at once, without waiting here, when <b>every</b> recipient (to, cc and bcc) is on this list for the sending account.
+        Your guardrails are still checked first. Only you can change this list — Claude has no tool for it. Every change and every automatic send is logged.</p>
+      <div class="row">
+        <input id="aaAddress" placeholder="name@example.com" autocomplete="off">
+        <select id="aaAccount"><option value="">Any account</option></select>
+        <button class="primary" id="aaAdd">Add</button>
+      </div>
+      <div class="status" id="aaStatus"></div>
+      <div id="aaList" class="mt12"></div>
+    </div>
     <div class="grid" id="outbox"></div>
   </section>
 
@@ -434,6 +446,7 @@ $('calForm').addEventListener('submit', async (e) => {
 
 /* ------------------------------ outbox ------------------------------ */
 async function loadOutbox() {
+  loadAutoApproved().catch(e => status('aaStatus', e.message, 'bad'));
   const data = await api('/api/outbox');
   $('reqApproval').checked = data.requireApproval;
   const el = $('outbox'); const n = data.pending.length;
@@ -463,6 +476,28 @@ async function loadOutbox() {
 $('reqApproval').addEventListener('change', async () => {
   if (!$('reqApproval').checked && !confirm('Allow Claude to send mail directly, without your approval?')) { $('reqApproval').checked = true; return; }
   await api('/api/outbox/settings', { method: 'POST', body: { requireApproval: $('reqApproval').checked } }); loadOutbox();
+});
+
+async function loadAutoApproved() {
+  const [d, accounts] = await Promise.all([api('/api/outbox/auto-approved'), api('/api/accounts')]);
+  const label = id => { const a = accounts.find(x => x.accountId === id); return a ? a.label : 'removed account'; };
+  const sel = $('aaAccount'); const keep = sel.value;
+  sel.innerHTML = '<option value="">Any account</option>' + accounts.filter(a => !a.readOnly).map(a => \`<option value="\${esc(a.accountId)}">\${esc(a.label)}</option>\`).join('');
+  sel.value = keep;
+  const el = $('aaList');
+  if (!d.entries.length) { el.innerHTML = '<div class="muted small">No auto-approved recipients. Every mail waits for you.</div>'; return; }
+  el.innerHTML = d.entries.map(e => \`<div class="row"><span class="grow"><b>\${esc(e.address)}</b> <span class="chip">\${e.accountId ? esc(label(e.accountId)) : 'any account'}</span></span>
+    <button class="danger" data-aadel="\${esc(e.id)}">Remove</button></div>\`).join('');
+  el.querySelectorAll('[data-aadel]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Remove this recipient? Mail to it will wait for your approval again.')) return;
+    await api('/api/outbox/auto-approved/' + b.dataset.aadel, { method: 'DELETE' }); loadAutoApproved();
+  }));
+}
+$('aaAdd').addEventListener('click', async () => {
+  const address = $('aaAddress').value.trim(); if (!address) return;
+  if (!confirm('Let Claude send mail to ' + address + ' without asking you first?')) return;
+  try { await api('/api/outbox/auto-approved', { method: 'POST', body: { address, accountId: $('aaAccount').value || undefined } }); $('aaAddress').value = ''; status('aaStatus', ''); loadAutoApproved(); }
+  catch (e) { status('aaStatus', e.message, 'bad'); }
 });
 
 /* ----------------------------- guardrails ----------------------------- */
