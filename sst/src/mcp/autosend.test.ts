@@ -56,9 +56,9 @@ const send = (args: any) => toolMap.get("send_message")!.handler({ account: "biz
 const reset = () => { calls.length = 0; audits.length = 0; noted.length = 0; };
 
 test("all recipients approved for the account: sent at once and audited", async () => {
-  list = [{ id: "1", address: "tekrajawasthi15@gmail.com", accountId: "biz", createdAt: "" }];
+  list = [{ id: "1", address: "approved.person@example.com", accountId: "biz", createdAt: "" }];
   reset();
-  const r: any = await send({ to: "Tek <TekrajAwasthi15@gmail.com>" });
+  const r: any = await send({ to: "Approved <Approved.Person@example.com>" });
   assert.deepEqual(calls, ["sendMessage"]);
   assert.equal(r.sent, true);
   assert.equal(r.autoApproved, true);

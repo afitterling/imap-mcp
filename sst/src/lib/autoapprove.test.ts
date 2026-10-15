@@ -28,7 +28,7 @@ test("allCovered needs every recipient on the list for that account", () => {
 });
 
 test("validateAddress normalises and refuses lists or display names", () => {
-  assert.equal(validateAddress("  Tek@Gmail.com "), "tek@gmail.com");
+  assert.equal(validateAddress("  Someone@Example.COM "), "someone@example.com");
   assert.throws(() => validateAddress("a@x.io, b@x.io"), /single/);
   assert.throws(() => validateAddress("Ann <a@x.io>"), /single/);
   assert.throws(() => validateAddress(""), /single/);
