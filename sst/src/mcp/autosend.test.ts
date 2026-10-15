@@ -33,17 +33,27 @@ mock.module("../lib/mail.js", {
     getMessage: async () => draft,
     draftsFolder: async () => "Drafts",
     MAX_TOTAL_ATTACHMENT_BYTES: 1024,
+    firstMessageId: (v?: string) => v,
+  },
+});
+const noted: any[] = [];
+mock.module("../lib/replies.js", {
+  namedExports: {
+    REPLY_RETENTION_DAYS: 365,
+    getReplies: async () => new Map(),
+    listReplies: async () => [],
+    noteReply: async (_a: any, _u: string, sent: any) => { noted.push(sent); return { recorded: !!sent.inReplyTo }; },
   },
 });
 mock.module("../lib/settings.js", { namedExports: { requireApproval: async () => true } });
-mock.module("../lib/outbox.js", { namedExports: { queueSend: async () => { calls.push("queueSend"); return { id: "p" }; } } });
+mock.module("../lib/outbox.js", { namedExports: { queueSend: async () => { calls.push("queueSend"); return { id: "p" }; }, listPending: async () => [] } });
 mock.module("../lib/audit.js", { namedExports: { audit: async (e: any) => { audits.push(e); } } });
 mock.module("../lib/guardrails.js", { namedExports: { listGuardrails: async () => [] } });
 
 const { tools, toolMap } = await import("./tools.js");
 const ctx = { userId: "u1", auth: "oauth" as const, tokenId: "t" };
 const send = (args: any) => toolMap.get("send_message")!.handler({ account: "biz", subject: "Hi", text: "t", ...args }, ctx);
-const reset = () => { calls.length = 0; audits.length = 0; };
+const reset = () => { calls.length = 0; audits.length = 0; noted.length = 0; };
 
 test("all recipients approved for the account: sent at once and audited", async () => {
   list = [{ id: "1", address: "tekrajawasthi15@gmail.com", accountId: "biz", createdAt: "" }];
@@ -96,6 +106,26 @@ test("send_draft follows the same rule, using the draft's own recipients", async
   reset();
   await toolMap.get("send_draft")!.handler({ account: "biz", uid: 7 }, ctx);
   assert.deepEqual(calls, ["queueSend"]);
+});
+
+test("an auto-sent reply is logged like any other sent reply; a queued one is not", async () => {
+  list = [{ id: "1", address: "friend@x.io", createdAt: "" }];
+  reset();
+  const r: any = await send({ to: "friend@x.io", inReplyTo: "<parent@x>" });
+  assert.equal(r.autoApproved, true);
+  assert.equal(r.replyLogged, true);
+  assert.deepEqual(noted.map((n) => [n.inReplyTo, n.via]), [["<parent@x>", "send_message"]]);
+
+  draft = { to: "friend@x.io", subject: "Re: s", text: "t", attachments: [], inReplyTo: "<draft-parent@x>" };
+  reset();
+  const d: any = await toolMap.get("send_draft")!.handler({ account: "biz", uid: 7 }, ctx);
+  assert.equal(d.replyLogged, true);
+  assert.deepEqual(noted.map((n) => [n.inReplyTo, n.via]), [["<draft-parent@x>", "send_draft"]]);
+
+  reset();
+  await send({ to: "stranger@x.io", inReplyTo: "<parent@x>" });
+  assert.deepEqual(calls, ["createDraft", "queueSend"]);
+  assert.equal(noted.length, 0);
 });
 
 test("no MCP tool can read or change the auto-approved list", () => {

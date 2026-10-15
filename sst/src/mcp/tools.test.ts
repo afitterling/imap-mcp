@@ -80,6 +80,8 @@ mock.module("../lib/replies.js", {
   },
 });
 mock.module("../lib/guardrails.js", { namedExports: { listGuardrails: async () => [] } });
+// No auto-approved recipients here; autosend.test.ts covers that path.
+mock.module("../lib/autoapprove.js", { namedExports: { mayAutoSend: async () => false } });
 
 const { tools, toolMap, ReadOnlyError } = await import("./tools.js");
 const ctx = { userId: "u1", auth: "pat" as const, tokenId: "t" };

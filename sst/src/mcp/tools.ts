@@ -303,7 +303,8 @@ export const tools: Tool[] = [
       if (await mayAutoSend(ctx.userId, acct.accountId, a.to, a.cc, a.bcc)) {
         const result = await mail.sendMessage(acct, args);
         await auditAutoRelease(ctx, acct, "send_message", { to: a.to, cc: a.cc, bcc: a.bcc, subject: a.subject });
-        return { ...result, sent: true, approvalRequired: false, autoApproved: true, message: AUTO_SENT };
+        const reply = await noteReply(acct, ctx.userId, { inReplyTo: a.inReplyTo, replyMessageId: result.messageId, subject: a.subject, to: a.to, via: "send_message" });
+        return { ...result, sent: true, approvalRequired: false, autoApproved: true, replyLogged: reply.recorded, message: AUTO_SENT };
       }
 
       // Park the composed message in the mailbox; only a human click releases it.
@@ -363,7 +364,8 @@ export const tools: Tool[] = [
       if (await mayAutoSend(ctx.userId, acct.accountId, to, draft.cc)) {
         const result = await mail.sendParkedMessage(acct, folder, a.uid, recipients);
         await auditAutoRelease(ctx, acct, "send_draft", { to, cc: draft.cc, subject: draft.subject });
-        return { ...result, sent: true, approvalRequired: false, autoApproved: true, message: AUTO_SENT };
+        const reply = await noteReply(acct, ctx.userId, { inReplyTo: draft.inReplyTo, replyMessageId: result.messageId, subject: draft.subject, to, via: "send_draft" });
+        return { ...result, sent: true, approvalRequired: false, autoApproved: true, replyLogged: reply.recorded, message: AUTO_SENT };
       }
       const pending = await queueSend({
         userId: ctx.userId,
