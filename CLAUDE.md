@@ -77,3 +77,41 @@ Once the project has real content, add:
 - **Architecture**: the big-picture structure that requires reading several files to understand (how SST stacks relate to app code, how Swift targets are organized, deployment stages), not a file-by-file listing.
 
 Do not add generic development advice here. Keep it specific to this repository.
+
+## Commands
+
+All code lives in `sst/`; run everything from there.
+
+```bash
+npm ci                                  # install from the lockfile
+npm run typecheck                       # tsc --noEmit
+npm test                                # node:test over src/**/*.test.ts (tsx, module mocks)
+node --import tsx --experimental-test-module-mocks --test src/mcp/autosend.test.ts   # one test file
+npm audit                               # must report 0 vulnerabilities before merging
+npx sst deploy --stage dev              # shared dev stage, from main
+npm run user                            # operator CLI (reset authenticator, disable a user)
+```
+
+The GitHub repo (`afitterling/imap-mcp`) is **public**: never put real addresses or personal
+data in tests, fixtures or commit messages; use `example.com`.
+
+## Architecture
+
+- One Lambda (`src/handler.ts`, Hono) behind a Function URL serves everything: server-rendered
+  pages (`src/web/pages/`, the user manual is `docs.ts` at `/docs`), the browser JSON API
+  (`src/routes/api.ts`, CSRF-checked), the OAuth endpoints for MCP clients, and `/mcp`.
+- `/mcp` is a JSON-RPC MCP server (`src/mcp/`); `tools.ts` defines every tool. Tools reach
+  mail through `src/lib/mail.ts` (imapflow/nodemailer) and calendars through tsdav/ical.js.
+- Users sign in through Cognito (MFA required, allowlist enforced by the `PreSignUp` trigger).
+  MCP clients authenticate with personal tokens or OAuth; both resolve to the Cognito `sub`.
+- DynamoDB tables hold users, encrypted mail/calendar credentials, sessions, tokens, the
+  Outbox queue, guardrails, auto-approved recipients and the reply log (`OAuth` table,
+  single-table keys like `config#autoapprove#<userId>`, `reply#<accountId>#<Message-ID>`), plus
+  the `Audit` table.
+- Sending is held by design: `send_message` / `send_draft` park the MIME in Drafts and queue it
+  in the Outbox. It is released only by a click in the app, or at once when every recipient is
+  on the user's auto-approved list (`src/lib/autoapprove.ts`). Read-only accounts refuse every
+  write except archiving when the account's "Allow archiving" switch is on.
+- Every tool call and every data change is written by `src/lib/audit.ts` to the `Audit` table
+  and as JSON to CloudWatch Logs.
+- `sst/README.md` has the full tool table, security model, Outbox and deploy notes.

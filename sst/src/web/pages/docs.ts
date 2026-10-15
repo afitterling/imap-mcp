@@ -86,6 +86,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
 
       <h3 id="mail-outbox">The Outbox</h3>
       <p>When Claude wants to send, the exact message is saved to your Drafts and listed in <b>Outbox</b> with recipients, subject and a preview. <b>Send now</b> puts exactly those bytes on the wire and files a copy in Sent; <b>Discard</b> drops the request and leaves the draft. Queued mail expires after 7 days. The switch above the list can allow direct sending — it is off by default and every change is logged and mailed to you.</p>
+      <p><b>Auto-approved recipients</b> (also in the Outbox tab): addresses Claude may mail without your click, for one mailbox or all of them, at most 50. A mail goes out at once only if <i>every</i> recipient — To, Cc and Bcc — is on the list for the sending mailbox; one other address and the whole mail waits in the Outbox as usual. Only you can change the list, here in the app; Claude has no tool for it. Every change is logged and mailed to you, and every mail sent this way appears in your Activity log.</p>
 
       <h3 id="mail-trouble">Troubleshooting</h3>
       <ul>

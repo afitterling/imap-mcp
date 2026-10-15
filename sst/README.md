@@ -148,6 +148,16 @@ pointer. **Send now** in the app sends those exact bytes and files the copy in S
 **Discard** drops the queue entry and leaves the draft. Queue entries expire after 7 days.
 Turning the hold off is logged and mails the user.
 
+**Auto-approved recipients** (`src/lib/autoapprove.ts`): a per-user list of up to 50
+addresses, each for one account or for all of them. `send_message` and `send_draft` skip the
+queue only when **every** recipient (to, cc and bcc) is on the list for the sending account;
+one unknown or unparsable address sends the whole mail to the Outbox. The result then says
+`sent: true, autoApproved: true`. The list is stored as `config#autoapprove#<userId>` in the
+`OAuth` table and edited only in the app (`/api/outbox/auto-approved`). There is deliberately no
+MCP tool for it, so the model cannot widen its own sending rights. Adding or removing an entry
+is audited (`outbox.auto-approve.add` / `.remove`) and mailed to the user; every mail sent this
+way is audited as `outbox.auto-release` and noted in the reply log.
+
 ## Audit trail
 
 `src/lib/audit.ts` writes one row per event to the `Audit` table (partition = user,
@@ -181,10 +191,29 @@ npm run typecheck
 npm test          # node:test; pure modules + mocked DB/mail layers
 ```
 
-`sst dev` deploys a personal stage — do not run it on this branch until the steps below
-are done.
+`sst dev` deploys a personal stage.
 
-## Deploying this branch
+## Deploying
+
+```bash
+npm ci && npm audit && npm test   # 0 vulnerabilities, all tests green
+npx sst deploy --stage dev        # shared dev stage, from main
+npx sst diff --stage production   # before every production deploy, from main only
+```
+
+| Stage | Deployed from | URL |
+|---|---|---|
+| `dev` | `main` | `https://4wjq5xykjxuw2pj77yfsn25x5y0zwelf.lambda-url.eu-central-1.on.aws/` (`/app`, `/mcp`), sign-in `https://webmail-mcp-dev.auth.eu-central-1.amazoncognito.com` |
+
+The repository is **public** (`afitterling/imap-mcp`): no real addresses or personal data in
+tests or fixtures, use `example.com`.
+
+Security scanning: the repo is the `imap-mcp` project in `2026/security-pipeline`
+(`projects.yaml`). It is scanned nightly at 05:40 (SBOM to Dependency-Track, trivy, gitleaks,
+semgrep, severity gate). `deploy` is off there, so a scan never deploys. Trigger it by hand
+with `scripts/run-scans.sh imap-mcp` in that repo.
+
+## One-time migration (multi-user rollout)
 
 1. Replace `michael.meyer@mindyourstep.de` in `src/lib/allowlist.ts`.
 2. Secrets: only `EncryptionKey` is used. `McpToken` and `AdminPassword` are no longer
