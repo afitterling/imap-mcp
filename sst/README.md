@@ -89,8 +89,10 @@ email or id. `list_accounts` reports `readOnly` and `allowArchive` (a read-only 
 |---|---|---|
 | `list_accounts` | List the caller's accounts | ✓ |
 | `list_folders` | List IMAP folders, with special-use flags | ✓ |
-| `search_messages` | Search subject/body, filter by sender, unread, date | ✓ |
-| `get_message` | Full body, headers, indexed attachment list | ✓ (`markSeen` refused) |
+| `search_messages` | Search subject/body; filter by sender, recipient, date, size and any IMAP flag or keyword (`answered`, `flagged`, `seen`, `forwarded`, `keyword`, …); rows carry the flags and the logged `reply` | ✓ |
+| `list_flags` | A folder's flags and keywords, and whether it stores new ones | ✓ |
+| `list_replies` | The reply log: “have I replied to this?” by Message-ID, or the latest replies | ✓ |
+| `get_message` | Full body, headers, flags, indexed attachment list | ✓ (`markSeen` refused) |
 | `get_attachment` | Download one attachment (4 MB cap) | ✓ |
 | `create_draft` | Save to Drafts over IMAP APPEND — nothing is sent | refused |
 | `send_message` | Compose; parked in Drafts and queued for approval (or sent directly if the user allowed it) | refused |
@@ -98,12 +100,20 @@ email or id. `list_accounts` reports `readOnly` and `allowArchive` (a read-only 
 | `list_guardrails` | The user's guardrails (see below) | ✓ |
 | `archive_message` | Move to the archive folder, auto-detected | refused, unless the account's **Allow archiving** switch is on |
 | `move_message` | Move to any folder | refused |
-| `flag_message` | Add/remove IMAP flags | refused |
+| `flag_message` | Add/remove IMAP flags and keywords (`\Answered`, `$Forwarded`, own tags) | refused |
 | `create_folder` | Create a folder | refused |
 | `delete_folder` | Delete a folder and its messages — `confirm=true`, special folders protected | refused |
 
 Read paths open mailboxes with IMAP `EXAMINE` (read-only), so reading changes nothing on
-the server. `tools/list` carries `readOnlyHint` / `destructiveHint` annotations.
+the server.
+
+**Reply log.** When a mail with `inReplyTo` actually goes out (direct send, `send_draft`, or an
+Outbox approval), the server writes a `reply#<accountId>#<Message-ID>` row to the `OAuth`
+key/value table (owner `userId`, time, count, recipients, subject; one-year TTL) and sets
+`\Answered` on the original in INBOX. `list_replies` and the `reply` field on messages read that
+row, so “have I replied?” needs no trip through Sent. Replies written in the user's own mail
+client are not logged, but their client sets `\Answered`, which `search_messages` reports and
+filters on. Deleting a mail account deletes its reply log. `tools/list` carries `readOnlyHint` / `destructiveHint` annotations.
 
 ### Calendar tools
 

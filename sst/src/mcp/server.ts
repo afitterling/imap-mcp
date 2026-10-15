@@ -18,10 +18,12 @@ const INSTRUCTIONS = [
   "changes, even marking a message read — is refused. Do not retry; tell the user the account is",
   "read-only and that they can change that in the WebMail / Private Office MCP app under Accounts.",
   "",
-  "NOTHING YOU DO HERE SENDS MAIL BY ITSELF. send_message composes the message, saves it to the",
+  "MAIL NORMALLY WAITS FOR THE USER. send_message composes the message, saves it to the",
   "mailbox and queues it for the user to release by hand in the WebMail / Private Office MCP app (Outbox). You cannot",
-  "approve it. So never tell the user a mail has been sent: say it is waiting for their approval,",
-  "and point them at the app. Report what the tool result actually says, nothing more.",
+  "approve it. The one exception: when every recipient is on the user's auto-approved list for that",
+  "account (which only the user can edit, in the app), the mail goes out at once and the result says",
+  "sent: true, autoApproved: true. Otherwise never tell the user a mail has been sent: say it is waiting",
+  "for their approval and point them at the app. Report what the tool result actually says, nothing more.",
   "",
   "Use create_draft whenever the user wants to look a message over, reply in their own words, or when",
   "recipients or wording are not settled. Drafts are the normal way to work here; send_message is for",
@@ -49,13 +51,20 @@ const INSTRUCTIONS = [
   "that link so one tap shows the message. Search headers first (the default scope); switch to scope=body",
   "only when the subject, sender and recipients did not turn it up.",
   "",
+  "FLAGS AND REPLIES: search_messages and get_message report each message's IMAP flags (seen, answered,",
+  "flagged, draft, deleted, forwarded, keywords) and search_messages filters on all of them — e.g.",
+  "answered=false for mail still waiting for a reply, flagged=true for starred mail, keyword for the user's",
+  "own tags (list_flags shows what a folder uses). To answer \"have I replied to this?\" call list_replies with",
+  "the messageId, or read `reply` / `answered` on the message; do not dig through the Sent folder. Always",
+  "pass inReplyTo when writing a reply, so it is logged and the original is marked answered once it goes out.",
+  "",
   "Every tool call is recorded in the user's activity log. Deleting messages and folders is visible to",
   "other people and often irreversible — confirm with the user before flagging a message \\Deleted or",
   "calling delete_folder.",
 ].join(" ");
 
 /** The few arguments worth keeping in the audit trail. Never bodies, never attachments. */
-const AUDITED_ARGS = ["account", "calendar", "folder", "uid", "uids", "to", "cc", "bcc", "subject", "summary", "start", "end", "target", "path", "query", "scope", "from", "add", "remove", "markSeen", "limit", "rrule"];
+const AUDITED_ARGS = ["account", "calendar", "folder", "uid", "uids", "to", "cc", "bcc", "subject", "summary", "start", "end", "target", "path", "query", "scope", "from", "add", "remove", "markSeen", "limit", "rrule", "seen", "unseen", "answered", "flagged", "draft", "deleted", "forwarded", "keyword", "notKeyword", "since", "before"];
 const CALENDAR_TOOLS = new Set(["list_calendars", "list_events", "get_event", "create_event", "update_event", "delete_event"]);
 
 function summarizeArgs(args: Record<string, unknown> | undefined): Record<string, string | number | boolean> {

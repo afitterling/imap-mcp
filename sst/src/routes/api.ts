@@ -8,6 +8,8 @@ import { listCalendars, getCalendar, putCalendar, deleteCalendar, setCalendarRea
 import { discoverCalendars, testCalendar, normalizeFeedUrl, assertPublicHost } from "../lib/calendar.js";
 import { requireApproval, setRequireApproval } from "../lib/settings.js";
 import { listPending, getPending, dropPending } from "../lib/outbox.js";
+import { listAutoApproved, addAutoApproved, removeAutoApproved } from "../lib/autoapprove.js";
+import { noteReply, forgetAccountReplies } from "../lib/replies.js";
 import { createToken, listTokens, revokeToken } from "../lib/tokens.js";
 import { listGrants, revokeGrant } from "../lib/oauth.js";
 import { audit, forUser, toCsv, type AuditKind } from "../lib/audit.js";
@@ -131,7 +133,8 @@ api.delete("/accounts/:id", async (c) => {
   const a = await getAccount(c.req.param("id"), s.user.userId);
   if (!a) throw new HttpError(404, "No such account.");
   await deleteAccount(a.accountId, s.user.userId);
-  await audit({ ...who(c, s), kind: "account", action: "account.delete", outcome: "success", target: a.label, details: { email: a.email } });
+  const replies = await forgetAccountReplies(s.user.userId, a.accountId);
+  await audit({ ...who(c, s), kind: "account", action: "account.delete", outcome: "success", target: a.label, details: { email: a.email, replyLogRows: replies } });
   return c.json({ ok: true });
 });
 
@@ -348,6 +351,41 @@ api.post("/outbox/settings", async (c) => {
   return c.json({ requireApproval: value });
 });
 
+/* Auto-approved recipients: web app only. There is no MCP tool, so Claude cannot change this list. */
+
+api.get("/outbox/auto-approved", async (c) => {
+  const s = await requireSigned(c);
+  return c.json({ entries: await listAutoApproved(s.user.userId) });
+});
+
+api.post("/outbox/auto-approved", async (c) => {
+  const s = await requireSigned(c);
+  const b = await jsonBody(c);
+  let accountId: string | undefined;
+  if (b.accountId) {
+    // Only the caller's own accounts can be named.
+    const acct = await getAccount(String(b.accountId), s.user.userId);
+    if (!acct) throw bad("Unknown account.");
+    accountId = acct.accountId;
+  }
+  try {
+    const entry = await addAutoApproved(s.user.userId, b.address, accountId);
+    await audit({ ...who(c, s), kind: "outbox", action: "outbox.auto-approve.add", outcome: "success", target: entry.address, details: { id: entry.id, accountId: entry.accountId ?? "any" } });
+    await alertUser(s.user, { title: "Auto-approved recipient added", outcome: "success", details: { ...requestContext(c), Recipient: entry.address, Effect: "Claude can now mail this address without your approval" } });
+    return c.json(entry);
+  } catch (err) {
+    await audit({ ...who(c, s), kind: "outbox", action: "outbox.auto-approve.add", outcome: "failure", details: { error: err instanceof Error ? err.message : String(err) } });
+    throw bad(err instanceof Error ? err.message : String(err));
+  }
+});
+
+api.delete("/outbox/auto-approved/:id", async (c) => {
+  const s = await requireSigned(c);
+  const gone = await removeAutoApproved(s.user.userId, c.req.param("id"));
+  await audit({ ...who(c, s), kind: "outbox", action: "outbox.auto-approve.remove", outcome: gone ? "success" : "failure", target: gone?.address, details: { id: c.req.param("id"), accountId: gone ? (gone.accountId ?? "any") : undefined } });
+  return c.json({ ok: !!gone });
+});
+
 /** The human gate: this is the only path that actually puts a queued mail on the wire. */
 api.post("/outbox/:id/approve", async (c) => {
   const s = await requireSigned(c);
@@ -360,6 +398,7 @@ api.post("/outbox/:id/approve", async (c) => {
     const result = await sendParkedMessage(account, pending.folder, pending.uid, recipients);
     await dropPending(pending.id);
     await audit({ ...who(c, s), kind: "outbox", action: "outbox.approve", outcome: "success", target: pending.accountLabel, details: { to: pending.to, subject: pending.subject, filedIn: result.filedIn } });
+    await noteReply(account, s.user.userId, { inReplyTo: pending.inReplyTo, replyMessageId: result.messageId, subject: pending.subject, to: pending.to, via: "outbox" });
     return c.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

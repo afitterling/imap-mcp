@@ -19,6 +19,8 @@ export type Pending = {
   subject: string;
   preview: string;
   attachments: { filename: string; size: number }[];
+  /** Message-ID this mail answers, so approving it logs the reply. */
+  inReplyTo?: string;
   createdAt: string;
   expiresAt: number;
 };

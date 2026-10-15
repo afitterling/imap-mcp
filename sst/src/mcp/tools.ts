@@ -1,8 +1,11 @@
 import { listAccounts, redact, resolveAccount, type Account } from "../lib/store.js";
 import * as mail from "../lib/mail.js";
 import { beautify } from "../lib/beautify.js";
-import { queueSend } from "../lib/outbox.js";
+import { queueSend, listPending } from "../lib/outbox.js";
+import { getReplies, listReplies, noteReply, REPLY_RETENTION_DAYS, type Reply } from "../lib/replies.js";
 import { requireApproval } from "../lib/settings.js";
+import { mayAutoSend } from "../lib/autoapprove.js";
+import { audit } from "../lib/audit.js";
 import { listCalendars, resolveCalendar, redactCalendar, isReadOnly, type CalendarSource } from "../lib/calstore.js";
 import * as cal from "../lib/calendar.js";
 import { listGuardrails } from "../lib/guardrails.js";
@@ -31,6 +34,23 @@ export type Tool = {
   handler: (args: any, ctx: CallerContext) => Promise<unknown>;
 };
 
+const AUTO_SENT =
+  "SENT without an Outbox click: every recipient is on the user's auto-approved list for this account. Tell the user it went out and to whom.";
+
+/** Structured CloudWatch/audit record for every mail released by the auto-approved list rather than a human. */
+function auditAutoRelease(ctx: CallerContext, acct: Account, tool: string, d: { to?: string; cc?: string; bcc?: string; subject?: string }) {
+  return audit({
+    userId: ctx.userId,
+    kind: "outbox",
+    action: "outbox.auto-release",
+    outcome: "success",
+    target: acct.label,
+    details: { tool, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, auth: ctx.auth },
+    client: ctx.client,
+    ip: ctx.ip,
+  });
+}
+
 export class ReadOnlyError extends Error {
   constructor(a: { label: string }, what: string, where = "Accounts → Read-only") {
     super(`Account "${a.label}" is read-only: ${what} is not allowed. The user can lift this in the WebMail / Private Office MCP app under ${where}.`);
@@ -55,6 +75,26 @@ async function writable(ref: string, ctx: CallerContext, what: string, opts: { a
   if (a.readOnly && !(opts.archive && a.allowArchive === true)) throw new ReadOnlyError(a, what);
   return a;
 }
+
+/** What a message row says about a logged reply. */
+function replySummary(r: Reply) {
+  return { repliedAt: r.repliedAt, count: r.count, to: r.to, subject: r.subject, via: r.via };
+}
+
+/** Adds `reply` from the reply log to message rows. Best effort: a failed lookup never breaks a read. */
+async function withReplies<T extends { messageId?: string }>(ctx: CallerContext, accountId: string, rows: T[]) {
+  const found = await getReplies(ctx.userId, accountId, rows.map((r) => r.messageId)).catch((err) => {
+    console.error("[replies] lookup failed:", err instanceof Error ? err.message : err);
+    return new Map<string, Reply>();
+  });
+  return rows.map((r) => {
+    const hit = found.get(mail.firstMessageId(r.messageId) ?? "");
+    return hit ? { ...r, reply: replySummary(hit) } : r;
+  });
+}
+
+const REPLY_NOTE =
+  "The reply log covers replies sent through this server (send_message, send_draft, Outbox approvals). Replies the user wrote in their own mail client are not in it — check `answered` (the IMAP \\Answered flag) from search_messages or get_message for those.";
 
 /** A handler may return this to emit MCP content blocks directly instead of JSON. */
 export type RawContent = { __mcpContent: unknown[] };
@@ -153,7 +193,7 @@ export const tools: Tool[] = [
     name: "search_messages",
     title: "Search messages",
     description:
-      "Search a folder and return message headers (uid, subject, from, date, read state) plus a `link` that opens the message in the web app — use that link whenever you refer to a mail somewhere the user will click (a to-do, a note, a summary). Combine filters freely; with no filters it returns the most recent messages. Search headers first (the default); only widen to scope=body when the headers did not find it.",
+      "Search a folder and return message headers (uid, subject, from, date), the message's IMAP flags (seen, answered, flagged, draft, deleted, forwarded, plus any `keywords` such as $Junk or custom tags), a `reply` block when the user answered it through this server, and a `link` that opens the message in the web app — use that link whenever you refer to a mail somewhere the user will click (a to-do, a note, a summary). All filters combine with AND; with no filters it returns the most recent messages. Flag filters take true (has it) or false (does not): e.g. answered=false + seen=true is \"read but never replied to\", flagged=true is \"starred\". Search headers first (the default); only widen to scope=body when the headers did not find it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -166,8 +206,25 @@ export const tools: Tool[] = [
           description: 'Where `query` is matched. "headers" (default): subject, sender and recipients only — fast. "body": the deep search, also inside the message text — slower on big folders. Start with headers.',
         },
         from: { type: "string", description: "Match the sender address." },
-        unseen: { type: "boolean", description: "Only unread messages." },
+        to: { type: "string", description: "Match a recipient address (To)." },
+        subject: { type: "string", description: "Match the subject only." },
+        unseen: { type: "boolean", description: "Only unread messages. Same as seen=false." },
+        seen: { type: "boolean", description: "true: only read messages. false: only unread (\\Seen)." },
+        answered: { type: "boolean", description: "true: only messages that have been replied to. false: only unanswered ones (\\Answered, set by mail clients and by this server when a reply goes out)." },
+        flagged: { type: "boolean", description: "true: only flagged/starred messages. false: only unflagged (\\Flagged)." },
+        draft: { type: "boolean", description: "true: only drafts (\\Draft)." },
+        deleted: { type: "boolean", description: "true: only messages marked for deletion but not yet expunged (\\Deleted)." },
+        forwarded: { type: "boolean", description: "true: only messages that were forwarded. false: never forwarded ($Forwarded keyword)." },
+        keyword: {
+          type: "array",
+          items: { type: "string" },
+          description: "Keywords (custom IMAP flags / tags, e.g. $Junk, $NotJunk, $MDNSent, $label1, Work) the message must ALL carry. See list_flags for what a folder uses.",
+        },
+        notKeyword: { type: "array", items: { type: "string" }, description: "Keywords the message must NOT carry." },
         since: { type: "string", description: "Only messages on or after this date (ISO 8601)." },
+        before: { type: "string", description: "Only messages before this date (ISO 8601)." },
+        larger: { type: "number", description: "Only messages larger than this many bytes." },
+        smaller: { type: "number", description: "Only messages smaller than this many bytes." },
         limit: { type: "number", description: "Max messages to return, default 20, max 100." },
       },
       required: ["account"],
@@ -176,13 +233,14 @@ export const tools: Tool[] = [
     handler: async (a, ctx) => {
       const acct = await resolveAccount(a.account, ctx.userId);
       const rows = await mail.searchMessages(acct, { ...a, scope: a.scope === "body" ? "body" : "headers" });
-      return rows.map((r) => withLink(ctx.origin, acct.accountId, r));
+      return (await withReplies(ctx, acct.accountId, rows)).map((r) => withLink(ctx.origin, acct.accountId, r));
     },
   },
   {
     name: "get_message",
     title: "Read a message",
-    description: "Fetch the full body, headers and attachment list of one message by uid. The result's `link` opens this message in the web app.",
+    description:
+      "Fetch the full body, headers, IMAP flags (seen, answered, flagged, forwarded, keywords) and attachment list of one message by uid. `inReplyTo` is the Message-ID it answers; `reply` appears when the user answered it through this server. The result's `link` opens this message in the web app.",
     inputSchema: {
       type: "object",
       properties: {
@@ -199,14 +257,15 @@ export const tools: Tool[] = [
       const acct = markSeen
         ? await writable(a.account, ctx, "marking a message read")
         : await resolveAccount(a.account, ctx.userId);
-      return withLink(ctx.origin, acct.accountId, await mail.getMessage(acct, a.folder ?? "INBOX", a.uid, markSeen));
+      const [msg] = await withReplies(ctx, acct.accountId, [await mail.getMessage(acct, a.folder ?? "INBOX", a.uid, markSeen)]);
+      return withLink(ctx.origin, acct.accountId, msg);
     },
   },
   {
     name: "send_message",
     title: "Send a message",
     description:
-      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the WebMail / Private Office MCP app, which is where it is actually released. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
+      "Compose an email for the user to send. By default this does NOT send: the message is composed, saved to the mailbox and queued for the user to approve by hand in the WebMail / Private Office MCP app, which is where it is actually released. The only exception is when every recipient is on the user's own auto-approved list for that account (which only the user can edit, in the app); then the result says sent: true and autoApproved: true. Tell the user plainly that the mail is waiting for their approval and give them the link the tool returns. Never claim a mail has been sent unless the tool result says it was.",
     inputSchema: {
       type: "object",
       properties: {
@@ -218,7 +277,10 @@ export const tools: Tool[] = [
         cc: { type: "string" },
         bcc: { type: "string" },
         replyTo: { type: "string" },
-        inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
+        inReplyTo: {
+          type: "string",
+          description: "Message-Id being replied to (messageId from search_messages/get_message). Always set it on a reply: it keeps threading intact, and once the mail goes out the reply is logged and the original is marked answered.",
+        },
         attachments: attachmentsSchema,
         ...formattingProps,
       },
@@ -233,7 +295,16 @@ export const tools: Tool[] = [
       const args = { ...a, attachments, html: htmlFor(a) };
 
       if (!(await requireApproval(ctx.userId))) {
-        return { ...(await mail.sendMessage(acct, args)), approvalRequired: false };
+        const sent = await mail.sendMessage(acct, args);
+        const reply = await noteReply(acct, ctx.userId, { inReplyTo: a.inReplyTo, replyMessageId: sent.messageId, subject: a.subject, to: a.to, via: "send_message" });
+        return { ...sent, approvalRequired: false, replyLogged: reply.recorded };
+      }
+      // Every recipient is on the user's auto-approved list for this account: no click needed.
+      if (await mayAutoSend(ctx.userId, acct.accountId, a.to, a.cc, a.bcc)) {
+        const result = await mail.sendMessage(acct, args);
+        await auditAutoRelease(ctx, acct, "send_message", { to: a.to, cc: a.cc, bcc: a.bcc, subject: a.subject });
+        const reply = await noteReply(acct, ctx.userId, { inReplyTo: a.inReplyTo, replyMessageId: result.messageId, subject: a.subject, to: a.to, via: "send_message" });
+        return { ...result, sent: true, approvalRequired: false, autoApproved: true, replyLogged: reply.recorded, message: AUTO_SENT };
       }
 
       // Park the composed message in the mailbox; only a human click releases it.
@@ -250,6 +321,7 @@ export const tools: Tool[] = [
         subject: a.subject,
         preview: String(a.text ?? "").slice(0, 400),
         attachments: (attachments ?? []).map((x) => ({ filename: x.filename, size: x.content.length })),
+        inReplyTo: mail.firstMessageId(a.inReplyTo),
       });
       return {
         sent: false,
@@ -265,7 +337,7 @@ export const tools: Tool[] = [
     name: "send_draft",
     title: "Send an existing draft",
     description:
-      "Send a message that already sits in the Drafts folder (written by the user in their mail client, or by create_draft). By default this does NOT send: the draft is queued for the user to approve by hand in the app's Outbox, exactly like send_message. Give the draft's uid from search_messages on the Drafts folder. Recipients are taken from the draft itself.",
+      "Send a message that already sits in the Drafts folder (written by the user in their mail client, or by create_draft). By default this does NOT send: the draft is queued for the user to approve by hand in the app's Outbox, exactly like send_message — including the same auto-approved-recipients exception. Give the draft's uid from search_messages on the Drafts folder. Recipients are taken from the draft itself.",
     inputSchema: {
       type: "object",
       properties: {
@@ -285,7 +357,15 @@ export const tools: Tool[] = [
       const recipients = [to, draft.cc].filter(Boolean).join(",");
 
       if (!(await requireApproval(ctx.userId))) {
-        return { ...(await mail.sendParkedMessage(acct, folder, a.uid, recipients)), sent: true, approvalRequired: false };
+        const sent = await mail.sendParkedMessage(acct, folder, a.uid, recipients);
+        const reply = await noteReply(acct, ctx.userId, { inReplyTo: draft.inReplyTo, replyMessageId: sent.messageId, subject: draft.subject, to, via: "send_draft" });
+        return { ...sent, sent: true, approvalRequired: false, replyLogged: reply.recorded };
+      }
+      if (await mayAutoSend(ctx.userId, acct.accountId, to, draft.cc)) {
+        const result = await mail.sendParkedMessage(acct, folder, a.uid, recipients);
+        await auditAutoRelease(ctx, acct, "send_draft", { to, cc: draft.cc, subject: draft.subject });
+        const reply = await noteReply(acct, ctx.userId, { inReplyTo: draft.inReplyTo, replyMessageId: result.messageId, subject: draft.subject, to, via: "send_draft" });
+        return { ...result, sent: true, approvalRequired: false, autoApproved: true, replyLogged: reply.recorded, message: AUTO_SENT };
       }
       const pending = await queueSend({
         userId: ctx.userId,
@@ -298,6 +378,7 @@ export const tools: Tool[] = [
         subject: draft.subject ?? "(no subject)",
         preview: String(draft.text ?? "").slice(0, 400),
         attachments: (draft.attachments ?? []).map((x) => ({ filename: x.filename ?? "attachment", size: x.size ?? 0 })),
+        inReplyTo: mail.firstMessageId(draft.inReplyTo),
       });
       return {
         sent: false,
@@ -325,7 +406,10 @@ export const tools: Tool[] = [
         cc: { type: "string" },
         bcc: { type: "string" },
         replyTo: { type: "string" },
-        inReplyTo: { type: "string", description: "Message-Id being replied to, to keep threading intact." },
+        inReplyTo: {
+          type: "string",
+          description: "Message-Id being replied to (messageId from search_messages/get_message). Set it on a reply: it keeps threading intact, and if the draft is later sent with send_draft the reply is logged.",
+        },
         attachments: attachmentsSchema,
         ...formattingProps,
         folder: { type: "string", description: "Override the drafts folder if auto-detection picks the wrong one." },
@@ -422,7 +506,8 @@ export const tools: Tool[] = [
   {
     name: "flag_message",
     title: "Flag or mark a message",
-    description: "Add or remove IMAP flags on a message, e.g. mark read (\\\\Seen), star (\\\\Flagged) or delete (\\\\Deleted).",
+    description:
+      "Add or remove IMAP flags on a message: system flags \\\\Seen (read), \\\\Flagged (star), \\\\Answered (replied), \\\\Draft, \\\\Deleted (marked for deletion), and keywords — $Forwarded, $Junk / $NotJunk, or the user's own tags (e.g. \"Work\"). Whether a folder stores new keywords is shown by list_flags.",
     inputSchema: {
       type: "object",
       properties: {
@@ -474,6 +559,67 @@ export const tools: Tool[] = [
     },
     mutating: true,
     handler: async (a, ctx) => mail.moveMessage(await writable(a.account, ctx, "moving a message"), a.folder ?? "INBOX", a.uid, a.target),
+  },
+  {
+    name: "list_flags",
+    title: "List a folder's flags and keywords",
+    description:
+      "The IMAP flags a folder knows: the system flags, the keywords (tags) already in use there such as $Forwarded, $Junk or the user's own labels, and whether new custom keywords can be stored. Use it before filtering or tagging by keyword.",
+    inputSchema: {
+      type: "object",
+      properties: { account, folder: { type: "string", description: "Folder path, default INBOX." } },
+      required: ["account"],
+    },
+    mutating: false,
+    handler: async (a, ctx) => mail.folderFlags(await resolveAccount(a.account, ctx.userId), a.folder ?? "INBOX"),
+  },
+  {
+    name: "list_replies",
+    title: "Replies sent (reply log)",
+    description:
+      "Answers \"have I replied to this?\" without opening the Sent folder. With `messageIds` (the messageId of each mail, from search_messages or get_message) it returns, for each, whether a reply went out through this server, when, to whom and how often, and whether one is still waiting for approval in the Outbox. Without `messageIds` it lists the most recent replies, newest first. Replies written in the user's own mail client are not in this log; for those check `answered` on the message (IMAP \\\\Answered flag).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { ...account, description: "Mail account — label, address or id. Required with messageIds; otherwise optional (all accounts)." },
+        messageIds: { type: "array", items: { type: "string" }, description: "Message-IDs of the mails to check, e.g. \"<abc@example.com>\"." },
+        since: { type: "string", description: "When listing: only replies on or after this date (ISO 8601)." },
+        limit: { type: "number", description: "When listing: max replies, default 50, max 500." },
+      },
+    },
+    mutating: false,
+    handler: async (a, ctx) => {
+      const acct = a.account ? await resolveAccount(a.account, ctx.userId) : undefined;
+      const queued = (await listPending(ctx.userId)).filter((p) => p.inReplyTo && (!acct || p.accountId === acct.accountId));
+      const awaiting = (p: (typeof queued)[number]) => ({ approvalId: p.id, account: p.accountLabel, to: p.to, subject: p.subject, queuedAt: p.createdAt });
+
+      if (Array.isArray(a.messageIds) && a.messageIds.length) {
+        if (!acct) throw new Error("Pass `account` together with messageIds — Message-IDs are looked up per mail account.");
+        if (a.messageIds.length > 100) throw new Error("At most 100 messageIds per call.");
+        const found = await getReplies(ctx.userId, acct.accountId, a.messageIds);
+        const results = a.messageIds.map((raw: unknown) => {
+          const id = mail.firstMessageId(String(raw));
+          const r = id ? found.get(id) : undefined;
+          const p = queued.find((q) => q.accountId === acct.accountId && q.inReplyTo === id);
+          return { messageId: id ?? String(raw), replied: !!r, ...(r ? replySummary(r) : {}), ...(p ? { awaitingApproval: awaiting(p) } : {}) };
+        });
+        return { account: acct.label, results, note: REPLY_NOTE };
+      }
+
+      if (a.since !== undefined && Number.isNaN(new Date(a.since).getTime())) throw new Error(`\`since\` is not a date: "${a.since}".`);
+      const labels = new Map((await listAccounts(ctx.userId)).map((x) => [x.accountId, x.label]));
+      const replies = await listReplies(ctx.userId, {
+        accountId: acct?.accountId,
+        since: a.since ? new Date(a.since).toISOString() : undefined,
+        limit: typeof a.limit === "number" ? a.limit : undefined,
+      });
+      return {
+        replies: replies.map((r) => ({ account: labels.get(r.accountId) ?? r.accountId, inReplyTo: r.messageId, ...replySummary(r), firstRepliedAt: r.firstRepliedAt })),
+        awaitingApproval: queued.map((p) => ({ ...awaiting(p), inReplyTo: p.inReplyTo })),
+        retentionDays: REPLY_RETENTION_DAYS,
+        note: REPLY_NOTE,
+      };
+    },
   },
   {
     name: "list_guardrails",
