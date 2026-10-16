@@ -3,6 +3,7 @@ import { Resource } from "sst";
 import { doc } from "./db.js";
 import { normalizeEmail } from "./allowlist.js";
 import type { IdClaims } from "./cognito.js";
+import { dropSnapshot } from "./notestore.js";
 
 const TABLE = () => Resource.Users.name;
 
@@ -77,6 +78,8 @@ async function rekey(old: User, sub: string): Promise<void> {
     if (String(item.id).startsWith("session#")) continue; // old sessions die with the old sub
     await doc.send(new UpdateCommand({ TableName: Resource.OAuth.name, Key: { id: item.id }, UpdateExpression: "SET userId = :n", ExpressionAttributeValues: { ":n": sub } }));
   }
+  // Synced iCloud notes are keyed by owner and are only a snapshot: drop them, the Mac re-sends.
+  await dropSnapshot(old.userId);
   await doc.send(new DeleteCommand({ TableName: TABLE(), Key: { userId: old.userId } }));
   console.log(JSON.stringify({ type: "audit", kind: "user", action: "user.rekey", outcome: "success", from: old.userId, to: sub, at: new Date().toISOString() }));
 }

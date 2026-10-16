@@ -7,15 +7,16 @@ user's own IMAP/SMTP mailboxes and manage their calendars (iCloud/CalDAV read-wr
 ICS feeds read-only) — with every send held for human approval, optional read-only
 accounts and calendars, mandatory two-factor sign-in and a built-in audit trail.
 
-The user manual (Apple Mail, Apple Calendar, connecting Claude) is served at `/docs`.
+The user manual (Apple Mail, Apple Calendar, Apple Notes, connecting Claude) is served at `/docs`.
 
 > **Branch `upgrade`: not deployed yet.** See "Deploying this branch" below before running
 > `sst deploy`.
 
 ## Architecture
 
-One Lambda behind a Function URL serves the MCP endpoint, the OAuth server and the web app;
-four DynamoDB tables hold the state.
+One Lambda serves the MCP endpoint, the OAuth server, the web app and the Notes relay API.
+It is reached only through CloudFront with the shared WAF (see "Edge" below); its Function
+URL answers 404 to direct calls. DynamoDB tables hold the state.
 
 ```
 Claude Code ──personal token──┐
@@ -38,6 +39,8 @@ Browser ──session cookie──> /app,/admin ┘                 ├─ Accou
 | `src/routes/oauth.ts` | OAuth 2.1 for MCP clients: registration, consent via Cognito, PKCE codes, tokens |
 | `src/routes/mcp.ts` | Resolves the bearer token to a user and hands off to the RPC layer |
 | `src/mcp/` | JSON-RPC over Streamable HTTP (stateless), tool definitions, read-only gate |
+| `src/lib/notes.ts` | Apple Notes in a mail account's `Notes` IMAP folder: folder detection, list/read, compose and APPEND new notes |
+| `src/lib/notestore.ts`, `src/routes/relay.ts` | iCloud notes snapshot pushed by the Mac relay, queued creates, relay state; the relay's bearer-token API |
 | `src/lib/calendar.ts`, `calstore.ts`, `tz.ts` | CalDAV via tsdav + ical.js: discovery, time-range reads with recurrence expansion, create/update/delete with etag checks; ICS fetch with SSRF guard; VTIMEZONE synthesis without a tz database |
 | `src/lib/` | mail (imapflow/nodemailer), users (profile mirror), sessions, tokens, oauth, store, outbox, settings, audit, ratelimit, notify, crypto |
 | `src/web/` | `layout.ts` (design system, nonce'd CSS/JS) and one file per page |
@@ -65,7 +68,7 @@ Cognito prefix domain, authorization code + PKCE). The app never handles a passw
   list users, reset a lost authenticator, sign out, disable/enable — are a CLI:
   `npm run user -- <list|reset-mfa|signout|disable|enable> [email] --stage <stage>`
   (`scripts/user.ts`, runs with your AWS credentials, not through the app).
-- The app client is created *after* the function (its callback is the function URL) and
+- The app client is created *after* the CloudFront distribution (its callback is the public URL) and
   found at runtime by name (`ListUserPoolClients`); the function gets only the five
   `cognito-idp` actions it uses (client lookup, own status, own global sign-out, MFA preference), scoped
   to the pool ARN — no `cognito-idp:*` link.
@@ -131,6 +134,84 @@ tool description tells the model to get the user's go-ahead first, and the audit
 records the attendee count. Sources: iCloud (`https://caldav.icloud.com`, app-specific
 password), Fastmail, Google, any CalDAV, and `webcal://`/`https://` ICS feeds (public,
 https-only, private networks refused, 5 MB cap).
+
+### Notes tools
+
+Two sources, both read + create only (no edit, no delete):
+
+- **mail** — notes kept in a mail account ("On My <account>", Notes switched on for that
+  account) are messages in the account's `Notes` IMAP folder, tagged
+  `X-Uniform-Type-Identifier: com.apple.mail-note` (`src/lib/notes.ts`). Read and written live.
+  The folder is the one whose last path segment is `Notes` (`Notes`, `[Gmail]/Notes`, `INBOX.Notes`).
+- **icloud** — iCloud notes sync through CloudKit, which has no server API. The Swift menu-bar
+  app in `mac/NotesRelay` reads the folders the user ticks through Notes.app scripting and pushes
+  them to `/relay/*` (`src/routes/relay.ts`); the `Notes` table holds that snapshot
+  (`src/lib/notestore.ts`, title and text AES-256-GCM encrypted, 90-day TTL renewed on every
+  push). `create_note source=icloud` queues a `notecreate#` row in the `OAuth` table (14-day TTL);
+  the relay creates the note and acknowledges it.
+
+| Tool | Does | Read-only account / relay |
+|---|---|---|
+| `list_notes` | Newest first with title, dates, preview; `source` all/mail/icloud; no `account` = every account, reporting `noNotesFolder`; iCloud rows carry the relay's `lastSyncAt` | ✓ |
+| `get_note` | Mail note by `account` + `uid` (folder opened read-only), iCloud note by `noteId` | ✓ |
+| `create_note` | Mail: APPEND (Apple headers, Notes-style HTML, `\Seen`). iCloud: queue for the relay | refused |
+
+**Relay authentication.** The relay is a separate Cognito app client (`MacRelay`: public, code +
+PKCE, callback `privateoffice-relay://callback`, MFA from the pool). `/relay/config` is public and
+returns the sign-in parameters; every other `/relay` route needs that client's access token
+(`verifyRelayToken`, a verifier separate from the web client's, so neither token works on the
+other's routes). The user is always the token's `sub`. Bodies are zod-validated (≤ 200 notes,
+title ≤ 500, text ≤ 100 000 chars, 4 MB body limit), requests are throttled per user, and failed
+auth is throttled per IP. Audit rows (`kind: notes`: `notes.sync`, `notes.prune`,
+`notes.create.done`, `notes.readonly`, `notes.disconnect`, plus every `mcp.*_note` call) carry
+counts and ids, never titles or text. The web app's Notes tab shows the relay, toggles read-only
+and wipes the snapshot. A user re-key drops the snapshot; the Mac re-sends it.
+
+## Edge: CloudFront + WAF
+
+The public address is a CloudFront distribution (`*.cloudfront.net`, the `url` output), not the
+Lambda Function URL. CloudFront attaches the account's shared web ACL `WAF202606` (IP
+blocklists, AWS managed common / known-bad-inputs / IP-reputation rules, per-IP rate limits;
+`/mcp` is exempt from its POST limit, body-size rule is count-only), caches nothing, and adds a
+random `x-origin-verify` header (Pulumi `RandomPassword`, linked to the function as
+`OriginVerify`). The server answers 404 to anything without that header, so the Function URL
+cannot be used to bypass the WAF. A CloudFront Function copies the viewer `Host` into
+`x-forwarded-host`; `origin()` (`src/routes/ctx.ts`) uses it — only on verified requests — for
+links, OAuth metadata and the Cognito callback, which points at the CloudFront domain.
+Responses default to `Cache-Control: no-store`. The default `*.cloudfront.net` certificate
+cannot pin a minimum TLS version; a custom domain would.
+
+Lambda Function URLs rename `WWW-Authenticate` to `x-amzn-remapped-www-authenticate`, so a 401
+from `/mcp` reaches clients without the standard header. MCP clients fall back to
+`/.well-known/oauth-protected-resource`, which works. A CloudFront Function cannot fix this
+(CloudFront skips viewer-response functions on 4xx); a Lambda@Edge origin-response function could.
+
+### The public URL and what changed
+
+| | Address | Status |
+|---|---|---|
+| Public (use this) | `url` / `mcp` / `app` outputs: `https://<id>.cloudfront.net/…` | Stable for the life of the distribution |
+| Lambda Function URL | `Server:` line of the deploy: `https://<id>.lambda-url.eu-central-1.on.aws/` | 404 for every request; internal origin only |
+
+Stages moved behind CloudFront:
+
+- **dev** on 2026-10-16: from `https://4wjq5xykjxuw2pj77yfsn25x5y0zwelf.lambda-url.eu-central-1.on.aws/`
+  to **`https://ddr0h7yjm5iia.cloudfront.net/`**.
+- **production**: not yet. Its first deploy with this change moves it the same way.
+
+After a stage moves (users, accounts, tokens and data are unchanged; only the address is new):
+
+1. **Claude Code:** `claude mcp remove private-office`, then `claude mcp add` again with the new
+   `/mcp` URL. The existing personal token keeps working.
+2. **claude.ai / desktop:** remove the custom connector and add it again with the new `/mcp`
+   URL, then sign in on the consent screen. The old grant can be revoked under **Connected apps**.
+3. **Mac Notes relay:** sign out, then sign in with the new address.
+4. **Bookmarks** to `/app` and links in old notes or to-dos point at the old address and now
+   return 404. Rewrite the host to the CloudFront domain.
+
+A custom domain (an alias plus an ACM certificate in us-east-1 on the distribution) would make
+the address independent of the distribution and allow pinning TLS 1.2. Clients would move once
+more, to that domain.
 
 ## Guardrails
 
@@ -225,3 +306,5 @@ with `scripts/run-scans.sh imap-mcp` in that repo.
    sign-in by whoever is first, the existing production accounts (which have no owner) are claimed.
 5. Reconnect Claude Code with a personal token and claude.ai via the new consent screen;
    existing connectors keep a cached tool list until reconnected.
+6. This deploy also puts the stage behind CloudFront: the public URL changes from the Function
+   URL to the `url` output. Follow "The public URL and what changed" above for every client.

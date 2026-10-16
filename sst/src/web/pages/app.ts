@@ -10,13 +10,14 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
     wide: true,
     body: `<div class="wrap wide">
   <div class="row between">
-    <div><h1>My office</h1><p class="lead mb0">Mailboxes and calendars Claude can reach as you, and everything it has done with them.</p></div>
+    <div><h1>My office</h1><p class="lead mb0">Mailboxes, calendars and notes Claude can reach as you, and everything it has done with them.</p></div>
     <div class="row"><button class="primary" id="addAcct">Add mail account</button><button id="addCal">Add calendar</button></div>
   </div>
 
   <div class="tabs" id="tabs">
     <button data-tab="accounts" class="cur">Accounts</button>
     <button data-tab="calendars">Calendars</button>
+    <button data-tab="notes">Notes</button>
     <button data-tab="outbox">Outbox <span id="obCount" class="chip accent hidden"></span></button>
     <button data-tab="guardrails">Guardrails</button>
     <button data-tab="connect">Connect Claude</button>
@@ -32,6 +33,20 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
   <!-- ------------------------------ Calendars ------------------------------ -->
   <section class="tab" id="tab-calendars">
     <div class="grid" id="calendars"><div class="empty">Loading…</div></div>
+  </section>
+
+  <!-- ------------------------------- Notes ------------------------------- -->
+  <section class="tab" id="tab-notes">
+    <div class="card mb12">
+      <h3>Notes in your mail accounts</h3>
+      <p class="muted small mb0">Claude reads and adds the Apple Notes kept in any mail account above that has Notes switched on (iPhone: Settings → Apps → Mail → Mail Accounts → the account → Notes). Nothing to set up here; see the <a href="/docs#notes">manual</a>.</p>
+    </div>
+    <div class="card mb12">
+      <h3>iCloud notes — Mac relay</h3>
+      <p class="muted small">Apple offers no server access to iCloud notes. The <b>Notes relay</b> app on your Mac sends the folders you pick to this server, encrypted, and adds the notes Claude queues. Install it, enter this server's address <code id="nrServer"></code> and sign in with your usual e-mail, password and authenticator code.</p>
+      <div id="relay"><div class="empty">Loading…</div></div>
+      <div class="status" id="nrStatus"></div>
+    </div>
   </section>
 
   <!-- ------------------------------- Outbox ------------------------------- -->
@@ -111,7 +126,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
       <div class="row">
         <select id="actKind" class="grow"><option value="">All kinds</option>
           <option value="auth">Sign-in</option><option value="mfa">Two-factor</option><option value="oauth">Connected apps</option>
-          <option value="token">Tokens</option><option value="mcp">Claude mail tools</option><option value="calendar">Calendars &amp; calendar tools</option><option value="account">Mail accounts</option>
+          <option value="token">Tokens</option><option value="mcp">Claude mail tools</option><option value="calendar">Calendars &amp; calendar tools</option><option value="notes">Notes tools</option><option value="account">Mail accounts</option>
           <option value="outbox">Outbox</option><option value="security">Security</option><option value="user">Users</option></select>
         <input type="date" id="actFrom" class="grow"><input type="date" id="actTo" class="grow">
         <button id="actLoad">Filter</button><a class="btn" id="actCsv" href="/api/activity.csv">Export CSV</a>
@@ -266,7 +281,7 @@ const PRESETS = {
 };
 
 /* ------------------------------- tabs ------------------------------- */
-const loaders = { accounts: loadAccounts, calendars: loadCalendars, guardrails: loadGuardrails, outbox: loadOutbox, connect: loadConnect, activity: () => loadActivity(true), security: loadSecurity };
+const loaders = { accounts: loadAccounts, calendars: loadCalendars, notes: loadNotes, guardrails: loadGuardrails, outbox: loadOutbox, connect: loadConnect, activity: () => loadActivity(true), security: loadSecurity };
 function showTab(name, push) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('cur', b.dataset.tab === name));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('cur', t.id === 'tab-' + name));
@@ -387,6 +402,30 @@ async function loadCalendars() {
     if (!confirm('Remove "' + b.dataset.label + '"? Claude will lose access to this calendar.')) return;
     await api('/api/calendars/' + b.dataset.cdel, { method: 'DELETE' }); loadCalendars();
   }));
+}
+/* ------------------------------- notes ------------------------------- */
+async function loadNotes() {
+  const d = await api('/api/notes/relay');
+  $('nrServer').textContent = d.serverUrl;
+  const el = $('relay');
+  if (!d.relay) { el.innerHTML = '<div class="empty">No Mac relay connected yet.</div>'; return; }
+  const r = d.relay;
+  el.innerHTML = \`<div class="item"><div class="grow">
+      <h3>\${esc(r.device)} \${r.readOnly ? '<span class="chip warn">read-only</span>' : ''}</h3>
+      <div class="meta">\${r.noteCount} notes synced · last sync \${ago(r.lastSyncAt)}</div>
+      \${d.pending.length ? '<div class="chips">' + d.pending.map(p => '<span class="chip accent" title="Queued ' + esc(when(p.createdAt)) + '">queued: ' + esc(p.title) + '</span>').join('') + '</div>' : ''}
+    </div><div class="row">
+      <label class="toggle" title="Claude can read the synced notes but not queue new ones"><input type="checkbox" id="nrRo" \${r.readOnly ? 'checked' : ''}> Read-only</label>
+      <button class="danger" id="nrDel">Disconnect &amp; delete synced notes</button>
+    </div></div>\`;
+  $('nrRo').addEventListener('change', async (e) => {
+    try { await api('/api/notes/relay/readonly', { method: 'POST', body: { readOnly: e.target.checked } }); loadNotes(); }
+    catch (err) { status('nrStatus', err.message, 'bad'); e.target.checked = !e.target.checked; }
+  });
+  $('nrDel').addEventListener('click', async () => {
+    if (!confirm('Delete every synced iCloud note and queued note from this server? Your notes on the Mac are not touched. Sign out of the relay app too, or it syncs again.')) return;
+    const res = await api('/api/notes/relay', { method: 'DELETE' }); status('nrStatus', 'Deleted ' + res.removed + ' synced notes.', 'ok'); loadNotes();
+  });
 }
 function calKindChanged() {
   const k = $('calKind').value; const ics = k === 'ics';

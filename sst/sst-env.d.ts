@@ -26,9 +26,22 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "MacRelay": {
+      "id": string
+      "secret": string
+      "type": "sst.aws.CognitoUserPoolClient"
+    }
+    "Notes": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "OAuth": {
       "name": string
       "type": "sst.aws.Dynamo"
+    }
+    "OriginVerify": {
+      "type": "sst.sst.Linkable"
+      "value": string
     }
     "PreSignUp": {
       "name": string

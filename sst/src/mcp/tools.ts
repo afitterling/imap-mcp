@@ -1,5 +1,7 @@
 import { listAccounts, redact, resolveAccount, type Account } from "../lib/store.js";
 import * as mail from "../lib/mail.js";
+import * as notes from "../lib/notes.js";
+import { getRelay, listIcloudNotes, getIcloudNote, queueNoteCreate } from "../lib/notestore.js";
 import { beautify } from "../lib/beautify.js";
 import { queueSend, listPending } from "../lib/outbox.js";
 import { getReplies, listReplies, noteReply, REPLY_RETENTION_DAYS, type Reply } from "../lib/replies.js";
@@ -92,6 +94,9 @@ async function withReplies<T extends { messageId?: string }>(ctx: CallerContext,
     return hit ? { ...r, reply: replySummary(hit) } : r;
   });
 }
+
+const RELAY_MISSING =
+  "No Mac relay is connected, so iCloud notes are not reachable. The user can install the Notes relay on their Mac and sign in to it (WebMail / Private Office MCP app → Notes).";
 
 const REPLY_NOTE =
   "The reply log covers replies sent through this server (send_message, send_draft, Outbox approvals). Replies the user wrote in their own mail client are not in it — check `answered` (the IMAP \\Answered flag) from search_messages or get_message for those.";
@@ -629,6 +634,125 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", properties: {} },
     mutating: false,
     handler: async (_a, ctx) => (await listGuardrails(ctx.userId)).filter((r) => r.enabled).map(({ id, text, tools, mode }) => ({ id, text, appliesTo: tools.length ? tools : "all tools", mode })),
+  },
+  /* ----------------------------------- notes ----------------------------------- */
+  {
+    name: "list_notes",
+    title: "List Apple Notes",
+    description:
+      "List the user's Apple Notes, newest first, with title, dates and a short preview. Two sources: `mail` — notes kept in a mail account's Notes folder (each with `account`, `uid` and a `link`); `icloud` — iCloud notes from the folders the user shares through their Mac relay (each with a `noteId`; the snapshot is as fresh as the relay's last sync, reported in `icloud.lastSyncAt` — say so when it matters). Default `all` returns both. Without `account` the mail side looks in EVERY account and says which have no Notes folder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string", enum: ["all", "mail", "icloud"], description: "Where to look. Default all." },
+        account: { ...account, description: "Only this mail account (label, email address or id). Implies source=mail unless source is given." },
+        query: { type: "string", description: "Text to look for in the note's title or text." },
+        limit: { type: "number", description: "Max notes per account (and from iCloud), default 20, max 100." },
+      },
+    },
+    mutating: false,
+    handler: async (a, ctx) => {
+      const source: string = a.source ?? (a.account ? "mail" : "all");
+      if (!["all", "mail", "icloud"].includes(source)) throw new Error('`source` must be "all", "mail" or "icloud".');
+      const args = { query: a.query, limit: typeof a.limit === "number" ? a.limit : undefined };
+      const out: Record<string, unknown> = {};
+      const found: unknown[] = [];
+
+      if (source !== "icloud") {
+        const accts = a.account ? [await resolveAccount(a.account, ctx.userId)] : await listAccounts(ctx.userId);
+        const settled = await Promise.allSettled(accts.map((x) => notes.listNotes(x, args)));
+        const noNotesFolder: string[] = [];
+        const errors: { account: string; error: string }[] = [];
+        settled.forEach((r, i) => {
+          const acct = accts[i];
+          if (r.status === "fulfilled") {
+            for (const n of r.value.notes) found.push(withLink(ctx.origin, acct.accountId, { source: "mail", account: acct.label, ...n }));
+          } else if (r.reason instanceof notes.NoNotesFolderError) noNotesFolder.push(acct.label);
+          else errors.push({ account: acct.label, error: r.reason instanceof Error ? r.reason.message : String(r.reason) });
+        });
+        // A single named account without Notes is an error the user should see as such.
+        if (a.account && noNotesFolder.length) throw new notes.NoNotesFolderError(accts[0]);
+        if (noNotesFolder.length) Object.assign(out, { noNotesFolder, hint: notes.NOTES_HINT });
+        if (errors.length) out.errors = errors;
+      }
+
+      if (source !== "mail") {
+        const relay = await getRelay(ctx.userId);
+        if (relay) {
+          for (const n of await listIcloudNotes(ctx.userId, args)) found.push({ source: "icloud", ...n });
+          out.icloud = { device: relay.device, lastSyncAt: relay.lastSyncAt, readOnly: relay.readOnly };
+        } else {
+          if (source === "icloud") throw new Error(RELAY_MISSING);
+          out.icloud = { connected: false, note: RELAY_MISSING };
+        }
+      }
+      return { notes: found, ...out };
+    },
+  },
+  {
+    name: "get_note",
+    title: "Read an Apple Note",
+    description:
+      "Read one note in full. A mail-account note by `account` + `uid` (from list_notes); an iCloud note by `noteId`. Reading never changes the note.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        uid: { type: "number", description: "A mail-account note's uid from list_notes." },
+        folder: { type: "string", description: "The mail note's folder from list_notes. Detected if omitted." },
+        noteId: { type: "string", description: "An iCloud note's noteId from list_notes." },
+      },
+    },
+    mutating: false,
+    handler: async (a, ctx) => {
+      if (typeof a.noteId === "string" && a.noteId) {
+        const relay = await getRelay(ctx.userId);
+        const n = await getIcloudNote(ctx.userId, a.noteId);
+        return { source: "icloud", ...n, lastSyncAt: relay?.lastSyncAt };
+      }
+      if (!a.account || typeof a.uid !== "number") throw new Error("Pass `noteId` for an iCloud note, or `account` and `uid` for a mail-account note.");
+      const acct = await resolveAccount(a.account, ctx.userId);
+      return withLink(ctx.origin, acct.accountId, { source: "mail", account: acct.label, ...(await notes.getNote(acct, a.uid, a.folder)) });
+    },
+  },
+  {
+    name: "create_note",
+    title: "Create an Apple Note",
+    description:
+      "Add a new Apple Note. With `account`: saved at once in that mail account's Notes folder and shows up on every device where Notes is on for it. With source=icloud: QUEUED for the user's Mac relay, which creates it in Notes the next time the Mac is awake and syncs — tell the user it is queued, never that it is done. Notes can only be added — never edited or deleted. Write the body as plain text: one line per paragraph, \"- \" for bullets, \"1. \" for numbered lists, \"## \" for a bold heading line.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string", enum: ["mail", "icloud"], description: "mail (default when `account` is given) or icloud." },
+        account,
+        title: { type: "string", description: "The note's title (its first line in the Notes app)." },
+        body: { type: "string", description: "The note's text, below the title." },
+        folder: { type: "string", description: "Mail: override the Notes folder. iCloud: the Notes folder to put it in (default: the iCloud account's Notes folder)." },
+      },
+      required: ["title"],
+    },
+    mutating: true,
+    handler: async (a, ctx) => {
+      if (!a.title || !String(a.title).trim()) throw new Error("A note needs a `title`.");
+      if (a.source === "icloud") {
+        const relay = await getRelay(ctx.userId);
+        if (!relay) throw new Error(RELAY_MISSING);
+        if (relay.readOnly) throw new ReadOnlyError({ label: "iCloud notes" }, "creating a note", "Notes → Read-only");
+        const queued = await queueNoteCreate(ctx.userId, { title: String(a.title).trim(), body: a.body, folder: a.folder });
+        return {
+          source: "icloud",
+          queued: true,
+          id: queued.id,
+          title: queued.title,
+          device: relay.device,
+          lastSyncAt: relay.lastSyncAt,
+          note: `QUEUED, not created yet: the Notes relay on "${relay.device}" adds it to Notes the next time it syncs (every few minutes while the Mac is awake).`,
+        };
+      }
+      if (!a.account) throw new Error("Pass `account` for a mail-account note, or source=icloud to queue an iCloud note.");
+      const acct = await writable(a.account, ctx, "creating a note");
+      return { source: "mail", account: acct.label, ...(await notes.createNote(acct, { title: a.title, body: a.body, folder: a.folder })) };
+    },
   },
   /* --------------------------------- calendars --------------------------------- */
   {

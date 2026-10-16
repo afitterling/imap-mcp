@@ -35,6 +35,34 @@ mock.module("../lib/mail.js", {
     MAX_TOTAL_ATTACHMENT_BYTES: 1024,
   },
 });
+class NoNotesFolderError extends Error {}
+const noteArgs: any[] = [];
+mock.module("../lib/notes.js", {
+  namedExports: {
+    NoNotesFolderError,
+    NOTES_HINT: "Switch on Notes",
+    // rw has notes, ro has no Notes folder, roa's server fails.
+    listNotes: async (a: any, args: any) => {
+      calls.push("listNotes"); noteArgs.push(args);
+      if (a.accountId === "ro") throw new NoNotesFolderError(`Account "${a.label}" has no Notes folder.`);
+      if (a.accountId === "roa") throw new Error("IMAP error at host: boom");
+      return { folder: "Notes", notes: [{ uid: 3, folder: "Notes", title: "Groceries", preview: "milk" }] };
+    },
+    getNote: async (_a: any, uid: number, folder?: string) => { calls.push("getNote"); return { uid, folder: folder ?? "Notes", title: "t", text: "x" }; },
+    createNote: stub("createNote"),
+  },
+});
+// iCloud notes: u1 has a relay; the test flips `relay` to cover "none" and "read-only".
+let relay: any = { device: "Mac", lastSyncAt: "2026-10-16T08:00:00.000Z", noteCount: 1, readOnly: false };
+const queuedNotes: any[] = [];
+mock.module("../lib/notestore.js", {
+  namedExports: {
+    getRelay: async (userId: string) => (userId === "u1" ? relay : undefined),
+    listIcloudNotes: async (userId: string, args: any) => { noteArgs.push({ icloud: args }); return userId === "u1" ? [{ noteId: "x-coredata://A/ICNote/p1", account: "iCloud", folder: "Notes", title: "Trip", modified: "2026-10-15T00:00:00Z", preview: "Passport" }] : []; },
+    getIcloudNote: async (userId: string, noteId: string) => { if (userId !== "u1") throw new Error("No synced iCloud note"); return { noteId, title: "Trip", text: "Trip\nPassport" }; },
+    queueNoteCreate: async (userId: string, n: any) => { queuedNotes.push({ userId, ...n }); return { id: "notecreate#q", title: n.title, body: n.body ?? "", createdAt: "now" }; },
+  },
+});
 let approval = false;
 mock.module("../lib/settings.js", { namedExports: { requireApproval: async () => approval } });
 
@@ -95,8 +123,9 @@ const MUTATING: Record<string, any> = {
   move_message: { uid: 1, target: "X" },
   create_folder: { path: "X" },
   delete_folder: { path: "X", confirm: true },
+  create_note: { title: "Idea" },
 };
-const READ: Record<string, any> = { list_folders: {}, search_messages: {}, get_message: { uid: 1 }, get_attachment: { uid: 1 }, list_flags: {} };
+const READ: Record<string, any> = { list_folders: {}, search_messages: {}, get_message: { uid: 1 }, get_attachment: { uid: 1 }, list_flags: {}, get_note: { uid: 3 } };
 const CAL_MUTATING: Record<string, any> = {
   create_event: { summary: "x", start: "2026-09-14T10:00" },
   update_event: { uid: "u", summary: "y" },
@@ -107,7 +136,7 @@ const CAL_READ: Record<string, any> = { list_events: {}, get_event: { uid: "u" }
 test("every tool declares mutating and matches the expected sets", () => {
   for (const t of tools) assert.equal(typeof t.mutating, "boolean", t.name);
   assert.deepEqual(tools.filter((t) => t.mutating).map((t) => t.name).sort(), [...Object.keys(MUTATING), ...Object.keys(CAL_MUTATING)].sort());
-  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails", "list_replies"].sort());
+  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails", "list_replies", "list_notes"].sort());
 });
 
 test("mutating tools are refused on a read-only account before touching mail", async () => {
@@ -268,4 +297,62 @@ test("a direct send logs the reply; a queued one carries inReplyTo to the Outbox
   } finally {
     approval = false;
   }
+});
+
+test("list_notes without an account looks in every account and the iCloud snapshot", async () => {
+  noteArgs.length = 0;
+  const res = (await toolMap.get("list_notes")!.handler({ query: "milk", limit: 5 }, { ...ctx, origin: "https://app.test" })) as any;
+  assert.deepEqual(res.notes.map((n: any) => [n.source, n.account, n.uid ?? n.noteId, n.title]), [["mail", "Open", 3, "Groceries"], ["icloud", "iCloud", "x-coredata://A/ICNote/p1", "Trip"]]);
+  assert.equal(res.notes[0].link, "https://app.test/mail/rw/Notes/3");
+  assert.deepEqual(res.noNotesFolder, ["Locked"]);
+  assert.equal(res.hint, "Switch on Notes");
+  assert.deepEqual(res.errors, [{ account: "Locked but archivable", error: "IMAP error at host: boom" }]);
+  assert.deepEqual(res.icloud, { device: "Mac", lastSyncAt: "2026-10-16T08:00:00.000Z", readOnly: false });
+  const q = { query: "milk", limit: 5 };
+  assert.deepEqual(noteArgs, [q, q, q, { icloud: q }]);
+  const other = (await toolMap.get("list_notes")!.handler({}, { ...ctx, userId: "u2" })) as any;
+  assert.deepEqual(other.notes, []);
+  assert.equal(other.icloud.connected, false, "no relay: said so, not an error");
+});
+
+test("list_notes source=icloud reads only the snapshot, and needs a relay", async () => {
+  calls.length = 0;
+  const res = (await toolMap.get("list_notes")!.handler({ source: "icloud" }, ctx)) as any;
+  assert.deepEqual(res.notes.map((n: any) => n.title), ["Trip"]);
+  assert.deepEqual(calls, [], "no mail account was contacted");
+  await assert.rejects(toolMap.get("list_notes")!.handler({ source: "icloud" }, { ...ctx, userId: "u2" }), /No Mac relay is connected/);
+  await assert.rejects(toolMap.get("list_notes")!.handler({ source: "paper" }, ctx), /must be "all", "mail" or "icloud"/);
+});
+
+test("get_note reads an iCloud note by noteId, a mail note by account and uid", async () => {
+  const ic = (await toolMap.get("get_note")!.handler({ noteId: "x-coredata://A/ICNote/p1" }, ctx)) as any;
+  assert.deepEqual([ic.source, ic.title, ic.lastSyncAt], ["icloud", "Trip", "2026-10-16T08:00:00.000Z"]);
+  const m = (await toolMap.get("get_note")!.handler({ account: "rw", uid: 3 }, ctx)) as any;
+  assert.deepEqual([m.source, m.account, m.uid], ["mail", "Open", 3]);
+  await assert.rejects(toolMap.get("get_note")!.handler({ account: "rw" }, ctx), /Pass `noteId`/);
+});
+
+test("create_note source=icloud queues for the Mac and says so; a read-only relay refuses", async () => {
+  queuedNotes.length = 0; calls.length = 0;
+  const res = (await toolMap.get("create_note")!.handler({ source: "icloud", title: " Idea ", body: "- one", folder: "Ideas" }, ctx)) as any;
+  assert.equal(res.queued, true);
+  assert.match(res.note, /QUEUED, not created yet/);
+  assert.deepEqual(queuedNotes, [{ userId: "u1", title: "Idea", body: "- one", folder: "Ideas" }]);
+  assert.deepEqual(calls, [], "no mail account was touched");
+  await assert.rejects(toolMap.get("create_note")!.handler({ source: "icloud", title: "x" }, { ...ctx, userId: "u2" }), /No Mac relay is connected/);
+  relay = { ...relay, readOnly: true };
+  try {
+    await assert.rejects(toolMap.get("create_note")!.handler({ source: "icloud", title: "x" }, ctx), ReadOnlyError);
+  } finally {
+    relay = { ...relay, readOnly: false };
+  }
+  assert.equal(queuedNotes.length, 1);
+  await assert.rejects(toolMap.get("create_note")!.handler({ title: "x" }, ctx), /Pass `account`/);
+  await assert.rejects(toolMap.get("create_note")!.handler({ source: "icloud", title: "  " }, ctx), /needs a `title`/);
+});
+
+test("list_notes on one named account without a Notes folder is an error, not an empty list", async () => {
+  await assert.rejects(toolMap.get("list_notes")!.handler({ account: "ro" }, ctx), NoNotesFolderError);
+  const res = (await toolMap.get("list_notes")!.handler({ account: "rw" }, ctx)) as any;
+  assert.deepEqual([res.notes.length, res.noNotesFolder, res.errors], [1, undefined, undefined]);
 });

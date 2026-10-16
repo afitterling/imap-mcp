@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
-import { type Env, jsonBody, bad, ip, ua, HttpError } from "./ctx.js";
+import { type Env, jsonBody, bad, ip, ua, origin, HttpError } from "./ctx.js";
 import { requireSigned, listSessions, deleteSessionById, destroySession, type Signed } from "../lib/sessions.js";
 import { listAccounts, getAccount, putAccount, deleteAccount, setReadOnly, setAllowArchive, redact } from "../lib/store.js";
 import { testAccount, sendParkedMessage } from "../lib/mail.js";
@@ -17,6 +17,7 @@ import { alertUser, requestContext } from "../lib/notify.js";
 import { bumpSessionVersion, publicUser } from "../lib/users.js";
 import { globalSignOut, userStatus, beginTotp, confirmTotp, otpauthUri } from "../lib/cognito.js";
 import { listGuardrails, upsertGuardrail, deleteGuardrail } from "../lib/guardrails.js";
+import { getRelay, setRelayReadOnly, listNoteCreates, wipeNotes } from "../lib/notestore.js";
 import { tools as mcpTools } from "../mcp/tools.js";
 const toolNames = () => mcpTools.map((t) => t.name);
 import { cognitoAccessToken } from "../lib/sessions.js";
@@ -33,7 +34,7 @@ const who = (c: any, s: Signed) => ({ userId: s.user.userId, ip: ip(c), ua: ua(c
 
 api.get("/me", async (c) => {
   const s = await requireSigned(c);
-  const mcpUrl = `${new URL(c.req.url).origin}/mcp`;
+  const mcpUrl = `${origin(c)}/mcp`;
   const cognito = await userStatus(s.user.email);
   return c.json({ user: publicUser(s.user), mcpUrl, mfa: cognito?.mfa ?? [], cognitoStatus: cognito?.status });
 });
@@ -309,6 +310,31 @@ api.post("/calendars/:id/test", async (c) => {
 /* ------------------------------- guardrails ------------------------------- */
 
 const knownTools = () => new Set(toolNames());
+
+/* ------------------------------- notes relay ------------------------------- */
+
+api.get("/notes/relay", async (c) => {
+  const s = await requireSigned(c);
+  const relay = await getRelay(s.user.userId);
+  const pending = relay ? (await listNoteCreates(s.user.userId)).map((p) => ({ id: p.id, title: p.title, createdAt: p.createdAt })) : [];
+  return c.json({ relay: relay ?? null, pending, serverUrl: origin(c) });
+});
+
+api.post("/notes/relay/readonly", async (c) => {
+  const s = await requireSigned(c);
+  const b = await jsonBody<{ readOnly?: boolean }>(c);
+  if (!(await getRelay(s.user.userId))) throw new HttpError(404, "No Notes relay is connected.");
+  await setRelayReadOnly(s.user.userId, b.readOnly === true);
+  await audit({ ...who(c, s), kind: "notes", action: "notes.readonly", outcome: "success", details: { readOnly: b.readOnly === true } });
+  return c.json({ ok: true });
+});
+
+api.delete("/notes/relay", async (c) => {
+  const s = await requireSigned(c);
+  const removed = await wipeNotes(s.user.userId);
+  await audit({ ...who(c, s), kind: "notes", action: "notes.disconnect", outcome: "success", details: { removed, via: "web" } });
+  return c.json({ removed });
+});
 
 api.get("/guardrails", async (c) => {
   const s = await requireSigned(c);

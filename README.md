@@ -1,20 +1,22 @@
 # WebMail / Private Office MCP
 
-An MCP server that gives Claude a private office: your own IMAP/SMTP mailboxes and your
-iCloud/CalDAV calendars, per user, with every outgoing mail held for your approval, a
-read-only switch on any account or calendar, mandatory two-factor sign-in through Amazon
-Cognito, and a built-in audit trail.
+An MCP server that gives Claude a private office: your own IMAP/SMTP mailboxes, your
+iCloud/CalDAV calendars and your Apple Notes (in mail accounts, and iCloud through a Mac
+relay), per user, with every outgoing mail held for your approval, a read-only switch on any
+account or calendar, mandatory two-factor sign-in through Amazon Cognito, and a built-in
+audit trail.
 
-Runs as one AWS Lambda behind a Function URL, defined and deployed with SST. The server
+Runs as one AWS Lambda behind CloudFront and the account's shared WAF, defined and deployed
+with SST. The Lambda's own Function URL refuses direct calls (404). The server
 code, infrastructure and full documentation live in [`sst/`](sst/README.md).
 
 ## What Claude can do
 
-| Mail | Calendar |
-|---|---|
-| list folders, search, read messages, download attachments | list calendars, list/search events (recurrences expanded), read an event |
-| save drafts, queue mail for your approval (Outbox) | create, update, delete events; recurrence rules, reminders, attendees |
-| archive, move, flag, create/delete folders | ICS/webcal subscriptions (read-only) |
+| Mail | Calendar | Notes |
+|---|---|---|
+| list folders, search, read messages, download attachments | list calendars, list/search events (recurrences expanded), read an event | list, search and read Apple Notes kept in a mail account |
+| save drafts, queue mail for your approval (Outbox) | create, update, delete events; recurrence rules, reminders, attendees | add new notes (no edit or delete) |
+| archive, move, flag, create/delete folders | ICS/webcal subscriptions (read-only) | iCloud notes from the folders you share through the Mac relay; new ones are queued for it |
 
 Anything marked **read-only** in the app is refused before the network is touched. Nothing is
 ever sent without a human click in the Outbox (unless you switch that off per user).
@@ -37,6 +39,7 @@ sst/                  SST app: Lambda (Hono), DynamoDB tables, Cognito user pool
   src/web/            server-rendered pages (landing, /docs manual, support, app)
   scripts/user.ts     operator CLI
   README.md           architecture, security model, deployment
+mac/NotesRelay/       Swift menu-bar app relaying chosen iCloud Notes folders (SPM; see its README)
 CLAUDE.md             project rules for Claude Code
 ```
 
@@ -50,9 +53,11 @@ npx sst secret set EncryptionKey "$(openssl rand -base64 32)" --stage dev
 npx sst deploy --stage dev
 ```
 
-The deploy prints the app URL. Open it, **Sign in → Sign up** with an allowlisted address, add a
-mailbox or calendar, create a token under **Connect Claude** and run the `claude mcp add`
-command it shows. Users find the manual at `/docs`.
+The deploy prints the public URLs: `url`, `app` and `mcp`, all on `*.cloudfront.net`. The
+`Server:` line above them is the Lambda's internal Function URL, which answers 404 to anything
+that does not come through CloudFront, so never hand it out. Open `app`, **Sign in → Sign up**
+with an allowlisted address, add a mailbox or calendar, create a token under **Connect Claude**
+and run the `claude mcp add` command it shows. Users find the manual at `/docs`.
 
 Stages: `dev` (shared), personal stages via `sst dev`, and `production` (protected, deployed
 from `main` only). See [`sst/README.md`](sst/README.md) for the security model, the CalDAV and

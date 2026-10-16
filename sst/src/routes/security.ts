@@ -1,16 +1,25 @@
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { bodyLimit } from "hono/body-limit";
-import { newNonce, origin, type Env } from "./ctx.js";
+import { newNonce, origin, edgeSecret, fromEdge, type Env } from "./ctx.js";
 
 /**
  * Cross-cutting protections for the browser-facing surface. The MCP and OAuth token
  * endpoints are machine-to-machine and get their own CORS handling elsewhere.
  */
 export function security(app: Hono<Env>) {
+  // Only CloudFront may call the function: it adds x-origin-verify, so nobody can step around
+  // the WAF through the bare Function URL. Stages without an edge (unit tests) skip the check.
+  app.use("*", async (c, next) => {
+    if (edgeSecret() && !fromEdge(c)) return c.text("Not found", 404);
+    await next();
+  });
+
   app.use("*", async (c, next) => {
     c.set("nonce", newNonce());
     await next();
+    // Nothing here is cacheable; CloudFront and browsers must not keep a copy unless a route says so.
+    if (!c.res.headers.has("cache-control")) c.res.headers.set("cache-control", "no-store");
   });
 
   app.use(
@@ -41,6 +50,8 @@ export function security(app: Hono<Env>) {
   // Attachments can be large but nothing a browser posts here should be.
   app.use("/api/*", bodyLimit({ maxSize: 256 * 1024 }));
   app.use("/login/*", bodyLimit({ maxSize: 16 * 1024 }));
+  // A relay push is at most 200 notes; Lambda's own payload cap is 6 MB.
+  app.use("/relay/*", bodyLimit({ maxSize: 4 * 1024 * 1024 }));
 
   /**
    * CSRF: a state-changing request from a browser must come from this origin. Fetch

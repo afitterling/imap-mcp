@@ -6,7 +6,7 @@ import type { Account } from "./store.js";
 import { imapPassword, smtpPassword } from "./store.js";
 
 /** Envelope dates arrive as a Date on most servers and as a raw string on some. */
-function toIso(value: string | Date | undefined): string | undefined {
+export function toIso(value: string | Date | undefined): string | undefined {
   if (!value) return undefined;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
@@ -38,7 +38,7 @@ function describeImapError(err: unknown, a: Account): Error {
 }
 
 /** Connect, run, always disconnect — Lambda must not leak sockets between invocations. */
-async function withImap<T>(a: Account, fn: (c: ImapFlow) => Promise<T>): Promise<T> {
+export async function withImap<T>(a: Account, fn: (c: ImapFlow) => Promise<T>): Promise<T> {
   const c = client(a);
   try {
     await c.connect();

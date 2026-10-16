@@ -15,6 +15,8 @@ export default $config({
           // Every resource carries the project definition.
           defaultTags: { tags: { Project: PROJECT, Stage: input?.stage ?? "unknown", ManagedBy: "SST" } },
         },
+        // For the CloudFront origin secret; creates no AWS resources.
+        random: "4.16.6",
       },
     };
   },
@@ -99,8 +101,43 @@ export default $config({
       ttl: "expiresAt",
     });
 
+    // iCloud notes as last pushed by the user's Mac relay (mac/NotesRelay): a snapshot of the
+    // folders they chose to share, title and text encrypted with EncryptionKey. Rows the Mac
+    // stops re-sending expire after 90 days.
+    const notes = new sst.aws.Dynamo("Notes", {
+      fields: { ownerId: "string", noteId: "string" },
+      primaryIndex: { hashKey: "ownerId", rangeKey: "noteId" },
+      ttl: "expiresAt",
+    });
+
     // Secrets: set with `sst secret set <name> <value>`
     const encryptionKey = new sst.Secret("EncryptionKey");
+
+    // The Mac Notes relay signs in as a native app: public client, authorization code + PKCE,
+    // custom-scheme callback. Its access tokens are accepted only on /relay (src/lib/cognito.ts).
+    const relayClient = auth.addClient("MacRelay", {
+      callbackUrls: ["privateoffice-relay://callback"],
+      transform: {
+        client: (args) => {
+          args.allowedOauthFlows = ["code"];
+          args.allowedOauthScopes = ["openid", "email"];
+          args.generateSecret = false;
+          args.logoutUrls = ["privateoffice-relay://signed-out"];
+          args.supportedIdentityProviders = ["COGNITO"];
+          args.preventUserExistenceErrors = "ENABLED";
+          args.enableTokenRevocation = true;
+          args.accessTokenValidity = 60;
+          args.idTokenValidity = 60;
+          args.refreshTokenValidity = 30;
+          args.tokenValidityUnits = { accessToken: "minutes", idToken: "minutes", refreshToken: "days" };
+        },
+      },
+    });
+
+    // The header CloudFront adds to every request it forwards. The server refuses requests
+    // without it, so the Function URL cannot be used to step around the WAF.
+    const originSecret = new random.RandomPassword("OriginVerifySecret", { length: 48, special: false });
+    const originVerify = new sst.Linkable("OriginVerify", { properties: { value: originSecret.result } });
 
     /* -------------------------------- server -------------------------------- */
 
@@ -111,10 +148,10 @@ export default $config({
       memory: "1024 MB", // headroom for parsing messages with attachments
       logging,
       nodejs: { install: ["imapflow", "mailparser", "nodemailer", "tsdav", "ical.js", "qrcode"] },
-      link: [users, accounts, calendars, oauth, audit, encryptionKey],
+      link: [users, accounts, calendars, oauth, audit, notes, encryptionKey, originVerify],
       // The pool is passed by id rather than linked so the function gets only the Cognito
       // actions it uses, instead of the link's cognito-idp:*.
-      environment: { COGNITO_USER_POOL_ID: auth.id, COGNITO_DOMAIN: auth.domainUrl!, COGNITO_REGION: "eu-central-1" },
+      environment: { COGNITO_USER_POOL_ID: auth.id, COGNITO_DOMAIN: auth.domainUrl!, COGNITO_REGION: "eu-central-1", RELAY_CLIENT_ID: relayClient.id },
       permissions: [
         {
           // Only what the app does for the signed-in user itself; operator actions live in scripts/user.ts.
@@ -124,16 +161,87 @@ export default $config({
       ],
     });
 
-    // The client's callback is the function URL, so the client is created after the function
-    // and looked up at runtime by name (see src/lib/cognito.ts).
+    /* --------------------------------- edge --------------------------------- */
+
+    // Everything public goes through CloudFront so the account's shared WAF (WAF202606: IP
+    // blocklists, AWS managed rules, per-IP rate limits; /mcp is exempt from its POST limit)
+    // sees every request. AWS-generated *.cloudfront.net domain, no custom domain yet.
+    const usEast1 = new aws.Provider("UsEast1", { region: "us-east-1" });
+    const waf = aws.wafv2.getWebAclOutput({ name: "WAF202606", scope: "CLOUDFRONT" }, { provider: usEast1 });
+
+    // Nothing is cached (TTL 0, and the server answers no-store), but Authorization must be in
+    // the cache key: otherwise CloudFront strips it from GET requests (the relay's GETs need it).
+    const edgeCache = new aws.cloudfront.CachePolicy("EdgeCache", {
+      name: `${PROJECT}-${$app.stage}-no-store`,
+      minTtl: 0,
+      defaultTtl: 0,
+      maxTtl: 1,
+      parametersInCacheKeyAndForwardedToOrigin: {
+        headersConfig: { headerBehavior: "whitelist", headers: { items: ["Authorization"] } },
+        cookiesConfig: { cookieBehavior: "all" },
+        queryStringsConfig: { queryStringBehavior: "all" },
+        enableAcceptEncodingGzip: true,
+        enableAcceptEncodingBrotli: true,
+      },
+    });
+
+    // The Function URL must see its own Host; the public one travels as x-forwarded-host and
+    // is trusted by the server only together with the origin secret (src/routes/ctx.ts).
+    const forwardHost = new aws.cloudfront.Function("EdgeForwardHost", {
+      name: `${PROJECT}-${$app.stage}-forward-host`,
+      runtime: "cloudfront-js-2.0",
+      publish: true,
+      code: [
+        "function handler(event) {",
+        "  var r = event.request;",
+        "  r.headers['x-forwarded-host'] = { value: r.headers.host.value };",
+        "  return r;",
+        "}",
+      ].join("\n"),
+    });
+
+    const edge = new aws.cloudfront.Distribution("Edge", {
+      comment: `${PROJECT} ${$app.stage}`,
+      enabled: true,
+      isIpv6Enabled: true,
+      httpVersion: "http2and3",
+      priceClass: "PriceClass_100",
+      webAclId: waf.arn,
+      origins: [
+        {
+          originId: "server",
+          domainName: server.url.apply((u) => new URL(u).host),
+          customOriginConfig: { httpPort: 80, httpsPort: 443, originProtocolPolicy: "https-only", originSslProtocols: ["TLSv1.2"], originReadTimeout: 60, originKeepaliveTimeout: 5 },
+          customHeaders: [{ name: "x-origin-verify", value: originSecret.result }],
+        },
+      ],
+      defaultCacheBehavior: {
+        targetOriginId: "server",
+        viewerProtocolPolicy: "redirect-to-https",
+        allowedMethods: ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+        cachedMethods: ["GET", "HEAD"],
+        cachePolicyId: edgeCache.id,
+        // Managed AllViewerExceptHostHeader: everything from the viewer except Host.
+        originRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+        compress: true,
+        functionAssociations: [{ eventType: "viewer-request", functionArn: forwardHost.arn }],
+      },
+      restrictions: { geoRestriction: { restrictionType: "none" } },
+      // The default *.cloudfront.net certificate; a custom domain would allow pinning TLS 1.2+.
+      viewerCertificate: { cloudfrontDefaultCertificate: true },
+    });
+    const publicUrl = $interpolate`https://${edge.domainName}/`;
+
+    // The client's callback is the public (CloudFront) URL, so the client is created after the
+    // edge and looked up at runtime by name (see src/lib/cognito.ts).
     auth.addClient("Web", {
-      callbackUrls: [$interpolate`${server.url}auth/callback`],
+      callbackUrls: [$interpolate`${publicUrl}auth/callback`],
       transform: {
         client: (args) => {
           args.allowedOauthFlows = ["code"];
           args.allowedOauthScopes = ["openid", "email", "profile"];
           args.generateSecret = true;
-          args.logoutUrls = [server.url, $interpolate`${server.url}login`];
+          args.logoutUrls = [publicUrl, $interpolate`${publicUrl}login`];
           args.supportedIdentityProviders = ["COGNITO"];
           args.preventUserExistenceErrors = "ENABLED";
           args.enableTokenRevocation = true;
@@ -146,10 +254,11 @@ export default $config({
     });
 
     return {
-      url: server.url,
-      mcp: $interpolate`${server.url}mcp`,
-      app: $interpolate`${server.url}app`,
+      url: publicUrl,
+      mcp: $interpolate`${publicUrl}mcp`,
+      app: $interpolate`${publicUrl}app`,
       login: auth.domainUrl,
+      relayClientId: relayClient.id,
     };
   },
 });
