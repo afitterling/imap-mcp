@@ -14,8 +14,9 @@ The user manual (Apple Mail, Apple Calendar, Apple Notes, connecting Claude) is 
 
 ## Architecture
 
-One Lambda behind a Function URL serves the MCP endpoint, the OAuth server and the web app;
-four DynamoDB tables hold the state.
+One Lambda serves the MCP endpoint, the OAuth server, the web app and the Notes relay API.
+It is reached only through CloudFront with the shared WAF (see "Edge" below); its Function
+URL answers 404 to direct calls. DynamoDB tables hold the state.
 
 ```
 Claude Code ──personal token──┐
@@ -67,7 +68,7 @@ Cognito prefix domain, authorization code + PKCE). The app never handles a passw
   list users, reset a lost authenticator, sign out, disable/enable — are a CLI:
   `npm run user -- <list|reset-mfa|signout|disable|enable> [email] --stage <stage>`
   (`scripts/user.ts`, runs with your AWS credentials, not through the app).
-- The app client is created *after* the function (its callback is the function URL) and
+- The app client is created *after* the CloudFront distribution (its callback is the public URL) and
   found at runtime by name (`ListUserPoolClients`); the function gets only the five
   `cognito-idp` actions it uses (client lookup, own status, own global sign-out, MFA preference), scoped
   to the pool ARN — no `cognito-idp:*` link.
@@ -180,6 +181,38 @@ links, OAuth metadata and the Cognito callback, which points at the CloudFront d
 Responses default to `Cache-Control: no-store`. The default `*.cloudfront.net` certificate
 cannot pin a minimum TLS version; a custom domain would.
 
+Lambda Function URLs rename `WWW-Authenticate` to `x-amzn-remapped-www-authenticate`, so a 401
+from `/mcp` reaches clients without the standard header. MCP clients fall back to
+`/.well-known/oauth-protected-resource`, which works. A CloudFront Function cannot fix this
+(CloudFront skips viewer-response functions on 4xx); a Lambda@Edge origin-response function could.
+
+### The public URL and what changed
+
+| | Address | Status |
+|---|---|---|
+| Public (use this) | `url` / `mcp` / `app` outputs: `https://<id>.cloudfront.net/…` | Stable for the life of the distribution |
+| Lambda Function URL | `Server:` line of the deploy: `https://<id>.lambda-url.eu-central-1.on.aws/` | 404 for every request; internal origin only |
+
+Stages moved behind CloudFront:
+
+- **dev** on 2026-10-16: from `https://4wjq5xykjxuw2pj77yfsn25x5y0zwelf.lambda-url.eu-central-1.on.aws/`
+  to **`https://ddr0h7yjm5iia.cloudfront.net/`**.
+- **production**: not yet. Its first deploy with this change moves it the same way.
+
+After a stage moves (users, accounts, tokens and data are unchanged; only the address is new):
+
+1. **Claude Code:** `claude mcp remove private-office`, then `claude mcp add` again with the new
+   `/mcp` URL. The existing personal token keeps working.
+2. **claude.ai / desktop:** remove the custom connector and add it again with the new `/mcp`
+   URL, then sign in on the consent screen. The old grant can be revoked under **Connected apps**.
+3. **Mac Notes relay:** sign out, then sign in with the new address.
+4. **Bookmarks** to `/app` and links in old notes or to-dos point at the old address and now
+   return 404. Rewrite the host to the CloudFront domain.
+
+A custom domain (an alias plus an ACM certificate in us-east-1 on the distribution) would make
+the address independent of the distribution and allow pinning TLS 1.2. Clients would move once
+more, to that domain.
+
 ## Guardrails
 
 Per-user rules in plain language (`src/lib/guardrails.ts`), evaluated by the server on every
@@ -244,3 +277,5 @@ are done.
    sign-in by whoever is first, the existing production accounts (which have no owner) are claimed.
 5. Reconnect Claude Code with a personal token and claude.ai via the new consent screen;
    existing connectors keep a cached tool list until reconnected.
+6. This deploy also puts the stage behind CloudFront: the public URL changes from the Function
+   URL to the `url` output. Follow "The public URL and what changed" above for every client.

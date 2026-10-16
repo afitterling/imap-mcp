@@ -14,7 +14,8 @@ swift test                 # Swift Testing: PKCE, tokens, API client, sync engin
 open build/NotesRelay.app
 ```
 
-Then **Sign in…** → enter the server address (e.g. the `url` output of `npx sst deploy`) →
+Then **Sign in…** → enter the server address: the `url` output of `npx sst deploy` (the
+`*.cloudfront.net` address; the `Server:` Lambda URL answers 404) →
 Cognito's hosted sign-in (e-mail, password, authenticator code) → allow Notes access when
 macOS asks → tick the folders to share.
 

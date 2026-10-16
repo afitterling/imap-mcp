@@ -192,6 +192,13 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li>You land on this server's consent screen: sign in with e-mail, password and second factor.</li>
         <li>The app now appears under <b>Connected apps</b>; <b>Disconnect</b> revokes it immediately.</li>
       </ol>
+      <h3>When the server's address changes</h3>
+      <p>Always connect to the MCP URL shown under <b>Connect Claude</b>. It ends in <code>.cloudfront.net/mcp</code>, the address that runs through the server's firewall. If the server moves (as it did when it was put behind CloudFront), the old address answers <i>404 Not found</i>. Your accounts, tokens and data stay exactly as they were; only the connection needs the new address:</p>
+      <ul>
+        <li><b>Claude Code</b>: <code>claude mcp remove private-office</code>, then run <code>claude mcp add</code> again with the new URL. Your existing token keeps working.</li>
+        <li><b>claude.ai / desktop</b>: remove the custom connector, add it again with the new URL and sign in once more.</li>
+        <li><b>Notes relay</b> on the Mac: sign out, then sign in with the new server address.</li>
+      </ul>
       <p>Clients cache the tool list when they connect. After the server is updated, toggle the connector off and on (or start a new conversation) to see new tools. A good first prompt: <i>“What's in my inbox, and what's on my calendar this week?”</i></p>
 
       <h2 id="safety">7. Safety &amp; privacy</h2>

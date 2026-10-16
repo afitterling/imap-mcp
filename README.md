@@ -6,7 +6,8 @@ relay), per user, with every outgoing mail held for your approval, a read-only s
 account or calendar, mandatory two-factor sign-in through Amazon Cognito, and a built-in
 audit trail.
 
-Runs as one AWS Lambda behind a Function URL, defined and deployed with SST. The server
+Runs as one AWS Lambda behind CloudFront and the account's shared WAF, defined and deployed
+with SST. The Lambda's own Function URL refuses direct calls (404). The server
 code, infrastructure and full documentation live in [`sst/`](sst/README.md).
 
 ## What Claude can do
@@ -52,9 +53,11 @@ npx sst secret set EncryptionKey "$(openssl rand -base64 32)" --stage dev
 npx sst deploy --stage dev
 ```
 
-The deploy prints the app URL. Open it, **Sign in → Sign up** with an allowlisted address, add a
-mailbox or calendar, create a token under **Connect Claude** and run the `claude mcp add`
-command it shows. Users find the manual at `/docs`.
+The deploy prints the public URLs: `url`, `app` and `mcp`, all on `*.cloudfront.net`. The
+`Server:` line above them is the Lambda's internal Function URL, which answers 404 to anything
+that does not come through CloudFront, so never hand it out. Open `app`, **Sign in → Sign up**
+with an allowlisted address, add a mailbox or calendar, create a token under **Connect Claude**
+and run the `claude mcp add` command it shows. Users find the manual at `/docs`.
 
 Stages: `dev` (shared), personal stages via `sst dev`, and `production` (protected, deployed
 from `main` only). See [`sst/README.md`](sst/README.md) for the security model, the CalDAV and
