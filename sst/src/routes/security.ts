@@ -41,6 +41,8 @@ export function security(app: Hono<Env>) {
   // Attachments can be large but nothing a browser posts here should be.
   app.use("/api/*", bodyLimit({ maxSize: 256 * 1024 }));
   app.use("/login/*", bodyLimit({ maxSize: 16 * 1024 }));
+  // A relay push is at most 200 notes; Lambda's own payload cap is 6 MB.
+  app.use("/relay/*", bodyLimit({ maxSize: 4 * 1024 * 1024 }));
 
   /**
    * CSRF: a state-changing request from a browser must come from this origin. Fetch

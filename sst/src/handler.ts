@@ -6,6 +6,7 @@ import { mcp } from "./routes/mcp.js";
 import { oauth } from "./routes/oauth.js";
 import { pages } from "./routes/pages.js";
 import { api } from "./routes/api.js";
+import { relay } from "./routes/relay.js";
 import { Unauthorized } from "./lib/sessions.js";
 import { RateLimited } from "./lib/ratelimit.js";
 
@@ -15,13 +16,14 @@ security(app);
 app.route("/", mcp);
 app.route("/", oauth);
 app.route("/api", api);
+app.route("/", relay);
 app.route("/", pages);
 
 app.notFound((c) => c.text("Not found", 404));
 
 app.onError((err, c) => {
   const path = new URL(c.req.url).pathname;
-  const wantsJson = path.startsWith("/api/") || path === "/mcp";
+  const wantsJson = path.startsWith("/api/") || path.startsWith("/relay/") || path === "/mcp";
   if (err instanceof Unauthorized) return wantsJson ? c.json({ error: err.message }, 401) : c.redirect("/login");
   if (err instanceof RateLimited) return wantsJson ? c.json({ error: err.message }, 429) : c.text(err.message, 429);
   if (err instanceof HttpError) return wantsJson ? c.json({ error: err.message }, err.status as any) : c.text(err.message, err.status as any);

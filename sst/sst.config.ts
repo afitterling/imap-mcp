@@ -99,8 +99,38 @@ export default $config({
       ttl: "expiresAt",
     });
 
+    // iCloud notes as last pushed by the user's Mac relay (mac/NotesRelay): a snapshot of the
+    // folders they chose to share, title and text encrypted with EncryptionKey. Rows the Mac
+    // stops re-sending expire after 90 days.
+    const notes = new sst.aws.Dynamo("Notes", {
+      fields: { ownerId: "string", noteId: "string" },
+      primaryIndex: { hashKey: "ownerId", rangeKey: "noteId" },
+      ttl: "expiresAt",
+    });
+
     // Secrets: set with `sst secret set <name> <value>`
     const encryptionKey = new sst.Secret("EncryptionKey");
+
+    // The Mac Notes relay signs in as a native app: public client, authorization code + PKCE,
+    // custom-scheme callback. Its access tokens are accepted only on /relay (src/lib/cognito.ts).
+    const relayClient = auth.addClient("MacRelay", {
+      callbackUrls: ["privateoffice-relay://callback"],
+      transform: {
+        client: (args) => {
+          args.allowedOauthFlows = ["code"];
+          args.allowedOauthScopes = ["openid", "email"];
+          args.generateSecret = false;
+          args.logoutUrls = ["privateoffice-relay://signed-out"];
+          args.supportedIdentityProviders = ["COGNITO"];
+          args.preventUserExistenceErrors = "ENABLED";
+          args.enableTokenRevocation = true;
+          args.accessTokenValidity = 60;
+          args.idTokenValidity = 60;
+          args.refreshTokenValidity = 30;
+          args.tokenValidityUnits = { accessToken: "minutes", idToken: "minutes", refreshToken: "days" };
+        },
+      },
+    });
 
     /* -------------------------------- server -------------------------------- */
 
@@ -111,10 +141,10 @@ export default $config({
       memory: "1024 MB", // headroom for parsing messages with attachments
       logging,
       nodejs: { install: ["imapflow", "mailparser", "nodemailer", "tsdav", "ical.js", "qrcode"] },
-      link: [users, accounts, calendars, oauth, audit, encryptionKey],
+      link: [users, accounts, calendars, oauth, audit, notes, encryptionKey],
       // The pool is passed by id rather than linked so the function gets only the Cognito
       // actions it uses, instead of the link's cognito-idp:*.
-      environment: { COGNITO_USER_POOL_ID: auth.id, COGNITO_DOMAIN: auth.domainUrl!, COGNITO_REGION: "eu-central-1" },
+      environment: { COGNITO_USER_POOL_ID: auth.id, COGNITO_DOMAIN: auth.domainUrl!, COGNITO_REGION: "eu-central-1", RELAY_CLIENT_ID: relayClient.id },
       permissions: [
         {
           // Only what the app does for the signed-in user itself; operator actions live in scripts/user.ts.
@@ -150,6 +180,7 @@ export default $config({
       mcp: $interpolate`${server.url}mcp`,
       app: $interpolate`${server.url}app`,
       login: auth.domainUrl,
+      relayClientId: relayClient.id,
     };
   },
 });

@@ -31,7 +31,8 @@ let cached: Promise<ClientConfig> | undefined;
 export function clientConfig(): Promise<ClientConfig> {
   return (cached ??= (async () => {
     const list = await idp.send(new ListUserPoolClientsCommand({ UserPoolId: POOL_ID(), MaxResults: 60 }));
-    const hit = list.UserPoolClients?.find((c) => c.ClientName === CLIENT_NAME) ?? list.UserPoolClients?.[0];
+    // Never fall back to the Notes relay's public client: it has no secret and a native callback.
+    const hit = list.UserPoolClients?.find((c) => c.ClientName === CLIENT_NAME) ?? list.UserPoolClients?.find((c) => c.ClientId !== RELAY_CLIENT_ID());
     if (!hit?.ClientId) throw new Error("No Cognito app client found for this user pool.");
     const desc = await idp.send(new DescribeUserPoolClientCommand({ UserPoolId: POOL_ID(), ClientId: hit.ClientId }));
     return { clientId: hit.ClientId, clientSecret: desc.UserPoolClient?.ClientSecret ?? "" };
@@ -127,6 +128,34 @@ export async function verifyAccessToken(token: string): Promise<{ sub: string; u
   } catch {
     return undefined;
   }
+}
+
+/* -------------------------------- Mac relay -------------------------------- */
+
+/** The Notes relay's own public app client (PKCE, no secret), created in sst.config.ts. */
+const RELAY_CLIENT_ID = () => process.env.RELAY_CLIENT_ID ?? "";
+export const RELAY_REDIRECT_URI = "privateoffice-relay://callback";
+
+let relayVerifier: ReturnType<typeof CognitoJwtVerifier.create> | undefined;
+
+/**
+ * Access tokens issued to the Notes relay app. A separate verifier on purpose: a relay token
+ * is accepted only on /relay, and the web client's tokens are not accepted there.
+ */
+export async function verifyRelayToken(token: string): Promise<{ sub: string } | undefined> {
+  if (!RELAY_CLIENT_ID()) return undefined;
+  try {
+    relayVerifier ??= CognitoJwtVerifier.create({ userPoolId: POOL_ID(), tokenUse: "access", clientId: RELAY_CLIENT_ID() });
+    const p = (await relayVerifier.verify(token)) as unknown as { sub: string };
+    return { sub: p.sub };
+  } catch {
+    return undefined;
+  }
+}
+
+/** What the Mac app needs to sign in. Nothing here is secret: the client is public and uses PKCE. */
+export function relayConfig() {
+  return { region: REGION(), userPoolId: POOL_ID(), clientId: RELAY_CLIENT_ID(), domain: DOMAIN(), redirectUri: RELAY_REDIRECT_URI, scopes: ["openid", "email"] };
 }
 
 export async function logoutUrl(redirectTo: string): Promise<string> {

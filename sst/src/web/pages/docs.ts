@@ -31,6 +31,9 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <a class="sub" href="#cal-ics">ICS subscriptions</a>
       <a class="sub" href="#cal-trouble">Troubleshooting</a>
       <a href="#notes">4. Apple Notes</a>
+      <a class="sub" href="#notes-mail">In a mail account</a>
+      <a class="sub" href="#notes-icloud">iCloud (Mac relay)</a>
+      <a class="sub" href="#notes-what">What Claude can do</a>
       <a href="#guardrails">5. Guardrails</a>
       <a href="#connect">6. Connecting Claude</a>
       <a href="#safety">7. Safety &amp; privacy</a>
@@ -139,17 +142,32 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       </ul>
 
       <h2 id="notes">4. Apple Notes</h2>
-      <p>Claude can read and add the Apple Notes that are kept in one of your <b>mail accounts</b>. Notes app stores those as ordinary messages in the account's <code>Notes</code> folder, so they come along with the mailbox you already added. Notes in <b>iCloud</b> (the default <i>iCloud</i> section of the Notes app) are not reachable: Apple syncs them through a private service with no access for other servers.</p>
+      <p>Claude can read and add Apple Notes from two places: notes kept in one of your <b>mail accounts</b>, and the <b>iCloud</b> folders you share through the Notes relay on your Mac. It can never edit or delete a note.</p>
+
+      <h3 id="notes-mail">Notes in a mail account</h3>
+      <p>The Notes app stores these as ordinary messages in the account's <code>Notes</code> folder, so they come along with the mailbox you already added. Claude reads and adds them live.</p>
       <ol>
         <li>Switch on Notes for the mail account. On iPhone: <b>Settings → Apps → Mail → Mail Accounts →</b> the account <b>→ Notes</b>. On Mac: <b>System Settings → Internet Accounts →</b> the account <b>→ Notes</b>.</li>
         <li>In the Notes app the account now has its own section. Notes you write there are the ones Claude sees.</li>
       </ol>
+
+      <h3 id="notes-icloud">iCloud notes (Mac relay)</h3>
+      <p>Apple offers no server access to iCloud notes. The small <b>Notes relay</b> app runs in your Mac's menu bar and does the work there:</p>
+      <ol>
+        <li>Build or install <code>NotesRelay.app</code> (in the repository under <code>mac/NotesRelay</code>, <code>./scripts/bundle.sh</code>) and open it.</li>
+        <li>Choose <b>Sign in…</b>, enter this server's address and sign in with your usual e-mail, password and authenticator code.</li>
+        <li>Allow access to Notes when macOS asks, then tick the folders Claude may read. Nothing is shared until you tick a folder.</li>
+      </ol>
+      <p>Every ten minutes while the Mac is awake (and right after it wakes), the relay sends new and changed notes from those folders, encrypted, and removes notes you deleted or unshared. What Claude sees is therefore as fresh as the last sync, and Claude says so. A note Claude adds to iCloud is <b>queued</b> and appears in Notes at the next sync. The relay puts it into the folder Claude named if that folder is shared, otherwise into a shared folder called Notes.</p>
+      <p>The <b>Notes</b> tab in the app shows the connected Mac, the last sync and queued notes. Its <b>Read-only</b> switch stops Claude from queuing new notes, and <b>Disconnect &amp; delete synced notes</b> removes everything the relay sent. Signing out in the relay does the same.</p>
+
+      <h3 id="notes-what">What Claude can do</h3>
       <ul>
-        <li><b>List and search</b> notes by title or text, in one account or all of them, each with a link that opens it in this app.</li>
+        <li><b>List and search</b> notes by title or text, across every source at once or one at a time. Mail-account notes come with a link that opens them in this app.</li>
         <li><b>Read</b> a note in full. Reading never changes it.</li>
-        <li><b>Add</b> a new note with a title, paragraphs and bullet or numbered lists. It shows up in the Notes app on every device where Notes is on for that account.</li>
+        <li><b>Add</b> a new note with a title, paragraphs and bullet or numbered lists.</li>
       </ul>
-      <p>Claude cannot edit or delete notes, and a <b>read-only</b> account refuses new notes too. Every note tool call appears under <b>Activity → Notes tools</b>, with the account but never the note's text.</p>
+      <p>A <b>read-only</b> mail account refuses new notes too. Every note tool call appears under <b>Activity → Notes tools</b>, with the account but never the note's text.</p>
 
       <h2 id="guardrails">5. Guardrails</h2>
       <p>Under <b>Guardrails</b> you write rules, in plain language, that the server enforces on <em>every</em> tool call before anything happens — independent of what the model remembers or intends. Each rule applies to all tools or to the ones you tick, and has a mode:</p>

@@ -26,6 +26,10 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "Notes": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "OAuth": {
       "name": string
       "type": "sst.aws.Dynamo"

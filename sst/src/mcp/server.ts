@@ -41,10 +41,12 @@ const INSTRUCTIONS = [
   "calendar server send invitation e-mails immediately — show the list and get explicit approval first.",
   "Deleting an event needs the same confirmation as deleting a folder.",
   "",
-  "NOTES: list_notes, get_note and create_note reach the Apple Notes kept in a mail account's Notes folder",
-  "(Notes switched on for that account on iPhone or Mac). list_notes without an account looks in all of",
-  "them. Notes can be read and added, never edited or deleted, and read-only accounts refuse create_note.",
-  "iCloud notes are not reachable through this server; say so rather than guessing.",
+  "NOTES: list_notes, get_note and create_note reach Apple Notes from two sources. `mail`: notes kept in a",
+  "mail account's Notes folder, read and written live. `icloud`: the iCloud folders the user shares through",
+  "the Notes relay on their Mac — a snapshot as fresh as the relay's last sync (say how old when it matters),",
+  "and create_note with source=icloud only QUEUES the note until the Mac next syncs: say it is queued, never",
+  "that it exists. Notes can be read and added, never edited or deleted; read-only accounts (and a read-only",
+  "relay) refuse create_note.",
   "",
   "GUARDRAILS: the user may have written rules (see list_guardrails and the section below). Rules marked",
   "'confirm' refuse a matching call until you re-call it with guardrails_ack listing the rule ids — do that",
@@ -69,7 +71,7 @@ const INSTRUCTIONS = [
 ].join(" ");
 
 /** The few arguments worth keeping in the audit trail. Never bodies, never attachments. */
-const AUDITED_ARGS = ["account", "calendar", "folder", "uid", "uids", "to", "cc", "bcc", "subject", "summary", "start", "end", "target", "path", "query", "scope", "from", "add", "remove", "markSeen", "limit", "rrule", "seen", "unseen", "answered", "flagged", "draft", "deleted", "forwarded", "keyword", "notKeyword", "since", "before"];
+const AUDITED_ARGS = ["account", "calendar", "source", "noteId", "folder", "uid", "uids", "to", "cc", "bcc", "subject", "summary", "start", "end", "target", "path", "query", "scope", "from", "add", "remove", "markSeen", "limit", "rrule", "seen", "unseen", "answered", "flagged", "draft", "deleted", "forwarded", "keyword", "notKeyword", "since", "before"];
 const CALENDAR_TOOLS = new Set(["list_calendars", "list_events", "get_event", "create_event", "update_event", "delete_event"]);
 const NOTES_TOOLS = new Set(["list_notes", "get_note", "create_note"]);
 

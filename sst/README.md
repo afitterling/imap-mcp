@@ -39,6 +39,7 @@ Browser ──session cookie──> /app,/admin ┘                 ├─ Accou
 | `src/routes/mcp.ts` | Resolves the bearer token to a user and hands off to the RPC layer |
 | `src/mcp/` | JSON-RPC over Streamable HTTP (stateless), tool definitions, read-only gate |
 | `src/lib/notes.ts` | Apple Notes in a mail account's `Notes` IMAP folder: folder detection, list/read, compose and APPEND new notes |
+| `src/lib/notestore.ts`, `src/routes/relay.ts` | iCloud notes snapshot pushed by the Mac relay, queued creates, relay state; the relay's bearer-token API |
 | `src/lib/calendar.ts`, `calstore.ts`, `tz.ts` | CalDAV via tsdav + ical.js: discovery, time-range reads with recurrence expansion, create/update/delete with etag checks; ICS fetch with SSRF guard; VTIMEZONE synthesis without a tz database |
 | `src/lib/` | mail (imapflow/nodemailer), users (profile mirror), sessions, tokens, oauth, store, outbox, settings, audit, ratelimit, notify, crypto |
 | `src/web/` | `layout.ts` (design system, nonce'd CSS/JS) and one file per page |
@@ -135,19 +136,35 @@ https-only, private networks refused, 5 MB cap).
 
 ### Notes tools
 
-Apple Notes kept in a mail account ("On My <account>", Notes switched on for that account) are
-messages in the account's `Notes` IMAP folder, tagged `X-Uniform-Type-Identifier:
-com.apple.mail-note` (`src/lib/notes.ts`). iCloud notes sync through CloudKit and are not
-reachable from the server.
+Two sources, both read + create only (no edit, no delete):
 
-| Tool | Does | Read-only account |
+- **mail** — notes kept in a mail account ("On My <account>", Notes switched on for that
+  account) are messages in the account's `Notes` IMAP folder, tagged
+  `X-Uniform-Type-Identifier: com.apple.mail-note` (`src/lib/notes.ts`). Read and written live.
+  The folder is the one whose last path segment is `Notes` (`Notes`, `[Gmail]/Notes`, `INBOX.Notes`).
+- **icloud** — iCloud notes sync through CloudKit, which has no server API. The Swift menu-bar
+  app in `mac/NotesRelay` reads the folders the user ticks through Notes.app scripting and pushes
+  them to `/relay/*` (`src/routes/relay.ts`); the `Notes` table holds that snapshot
+  (`src/lib/notestore.ts`, title and text AES-256-GCM encrypted, 90-day TTL renewed on every
+  push). `create_note source=icloud` queues a `notecreate#` row in the `OAuth` table (14-day TTL);
+  the relay creates the note and acknowledges it.
+
+| Tool | Does | Read-only account / relay |
 |---|---|---|
-| `list_notes` | Notes newest first with title, dates, preview and `link`; no `account` = every account, reporting `noNotesFolder` | ✓ |
-| `get_note` | One note's full text and HTML, folder opened read-only | ✓ |
-| `create_note` | APPEND a new note (Apple headers, Notes-style HTML, `\Seen`); no edit or delete | refused |
+| `list_notes` | Newest first with title, dates, preview; `source` all/mail/icloud; no `account` = every account, reporting `noNotesFolder`; iCloud rows carry the relay's `lastSyncAt` | ✓ |
+| `get_note` | Mail note by `account` + `uid` (folder opened read-only), iCloud note by `noteId` | ✓ |
+| `create_note` | Mail: APPEND (Apple headers, Notes-style HTML, `\Seen`). iCloud: queue for the relay | refused |
 
-The Notes folder is the one whose last path segment is `Notes` (`Notes`, `[Gmail]/Notes`,
-`INBOX.Notes`). Audit rows use kind `notes` and never carry the title or text.
+**Relay authentication.** The relay is a separate Cognito app client (`MacRelay`: public, code +
+PKCE, callback `privateoffice-relay://callback`, MFA from the pool). `/relay/config` is public and
+returns the sign-in parameters; every other `/relay` route needs that client's access token
+(`verifyRelayToken`, a verifier separate from the web client's, so neither token works on the
+other's routes). The user is always the token's `sub`. Bodies are zod-validated (≤ 200 notes,
+title ≤ 500, text ≤ 100 000 chars, 4 MB body limit), requests are throttled per user, and failed
+auth is throttled per IP. Audit rows (`kind: notes`: `notes.sync`, `notes.prune`,
+`notes.create.done`, `notes.readonly`, `notes.disconnect`, plus every `mcp.*_note` call) carry
+counts and ids, never titles or text. The web app's Notes tab shows the relay, toggles read-only
+and wipes the snapshot. A user re-key drops the snapshot; the Mac re-sends it.
 
 ## Guardrails
 
