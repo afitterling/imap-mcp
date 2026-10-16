@@ -166,6 +166,20 @@ auth is throttled per IP. Audit rows (`kind: notes`: `notes.sync`, `notes.prune`
 counts and ids, never titles or text. The web app's Notes tab shows the relay, toggles read-only
 and wipes the snapshot. A user re-key drops the snapshot; the Mac re-sends it.
 
+## Edge: CloudFront + WAF
+
+The public address is a CloudFront distribution (`*.cloudfront.net`, the `url` output), not the
+Lambda Function URL. CloudFront attaches the account's shared web ACL `WAF202606` (IP
+blocklists, AWS managed common / known-bad-inputs / IP-reputation rules, per-IP rate limits;
+`/mcp` is exempt from its POST limit, body-size rule is count-only), caches nothing, and adds a
+random `x-origin-verify` header (Pulumi `RandomPassword`, linked to the function as
+`OriginVerify`). The server answers 404 to anything without that header, so the Function URL
+cannot be used to bypass the WAF. A CloudFront Function copies the viewer `Host` into
+`x-forwarded-host`; `origin()` (`src/routes/ctx.ts`) uses it — only on verified requests — for
+links, OAuth metadata and the Cognito callback, which points at the CloudFront domain.
+Responses default to `Cache-Control: no-store`. The default `*.cloudfront.net` certificate
+cannot pin a minimum TLS version; a custom domain would.
+
 ## Guardrails
 
 Per-user rules in plain language (`src/lib/guardrails.ts`), evaluated by the server on every

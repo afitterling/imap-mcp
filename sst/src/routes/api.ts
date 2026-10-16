@@ -34,7 +34,7 @@ const who = (c: any, s: Signed) => ({ userId: s.user.userId, ip: ip(c), ua: ua(c
 
 api.get("/me", async (c) => {
   const s = await requireSigned(c);
-  const mcpUrl = `${new URL(c.req.url).origin}/mcp`;
+  const mcpUrl = `${origin(c)}/mcp`;
   const cognito = await userStatus(s.user.email);
   return c.json({ user: publicUser(s.user), mcpUrl, mfa: cognito?.mfa ?? [], cognitoStatus: cognito?.status });
 });
