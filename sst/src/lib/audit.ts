@@ -9,7 +9,7 @@ const RETENTION_DAYS = 365;
 /** Rows about things that happened before anyone was signed in (bad logins, denied sign-ups). */
 export const ANONYMOUS = "anonymous";
 
-export type AuditKind = "auth" | "mfa" | "oauth" | "token" | "mcp" | "account" | "calendar" | "outbox" | "user" | "security" | "settings";
+export type AuditKind = "auth" | "mfa" | "oauth" | "token" | "mcp" | "account" | "calendar" | "notes" | "outbox" | "user" | "security" | "settings";
 export type Outcome = "success" | "failure" | "denied";
 
 export type AuditEntry = {

@@ -49,6 +49,7 @@ mock.module("../lib/settings.js", { namedExports: { requireApproval: async () =>
 mock.module("../lib/outbox.js", { namedExports: { queueSend: async () => { calls.push("queueSend"); return { id: "p" }; }, listPending: async () => [] } });
 mock.module("../lib/audit.js", { namedExports: { audit: async (e: any) => { audits.push(e); } } });
 mock.module("../lib/guardrails.js", { namedExports: { listGuardrails: async () => [] } });
+mock.module("../lib/notes.js", { namedExports: { NoNotesFolderError: Error, NOTES_HINT: "", listNotes: async () => ({ notes: [] }), getNote: async () => ({}), createNote: async () => ({}) } });
 
 const { tools, toolMap } = await import("./tools.js");
 const ctx = { userId: "u1", auth: "oauth" as const, tokenId: "t" };

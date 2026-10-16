@@ -30,10 +30,11 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       <a class="sub" href="#cal-what">What Claude can do</a>
       <a class="sub" href="#cal-ics">ICS subscriptions</a>
       <a class="sub" href="#cal-trouble">Troubleshooting</a>
-      <a href="#guardrails">4. Guardrails</a>
-      <a href="#connect">5. Connecting Claude</a>
-      <a href="#safety">6. Safety &amp; privacy</a>
-      <a href="#ops">7. Operations (CLI)</a>
+      <a href="#notes">4. Apple Notes</a>
+      <a href="#guardrails">5. Guardrails</a>
+      <a href="#connect">6. Connecting Claude</a>
+      <a href="#safety">7. Safety &amp; privacy</a>
+      <a href="#ops">8. Operations (CLI)</a>
     </nav>
     <div class="prose">
 
@@ -137,7 +138,20 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>“The event changed on the server while editing”</b> — you or a device edited it at the same time; ask Claude to fetch and retry.</li>
       </ul>
 
-      <h2 id="guardrails">4. Guardrails</h2>
+      <h2 id="notes">4. Apple Notes</h2>
+      <p>Claude can read and add the Apple Notes that are kept in one of your <b>mail accounts</b>. Notes app stores those as ordinary messages in the account's <code>Notes</code> folder, so they come along with the mailbox you already added. Notes in <b>iCloud</b> (the default <i>iCloud</i> section of the Notes app) are not reachable: Apple syncs them through a private service with no access for other servers.</p>
+      <ol>
+        <li>Switch on Notes for the mail account. On iPhone: <b>Settings → Apps → Mail → Mail Accounts →</b> the account <b>→ Notes</b>. On Mac: <b>System Settings → Internet Accounts →</b> the account <b>→ Notes</b>.</li>
+        <li>In the Notes app the account now has its own section. Notes you write there are the ones Claude sees.</li>
+      </ol>
+      <ul>
+        <li><b>List and search</b> notes by title or text, in one account or all of them, each with a link that opens it in this app.</li>
+        <li><b>Read</b> a note in full. Reading never changes it.</li>
+        <li><b>Add</b> a new note with a title, paragraphs and bullet or numbered lists. It shows up in the Notes app on every device where Notes is on for that account.</li>
+      </ul>
+      <p>Claude cannot edit or delete notes, and a <b>read-only</b> account refuses new notes too. Every note tool call appears under <b>Activity → Notes tools</b>, with the account but never the note's text.</p>
+
+      <h2 id="guardrails">5. Guardrails</h2>
       <p>Under <b>Guardrails</b> you write rules, in plain language, that the server enforces on <em>every</em> tool call before anything happens — independent of what the model remembers or intends. Each rule applies to all tools or to the ones you tick, and has a mode:</p>
       <ul>
         <li><b>Remind</b> — the rule is placed in Claude's instructions at connect time and prepended to every matching tool result. For style and preference rules: “Write German mails with Sie”, “Never archive mail from my accountant”.</li>
@@ -146,7 +160,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       </ul>
       <p>Every refusal and every reminder is recorded in your Activity log (kind “Settings” for rule changes; the tool call itself shows <code>denied</code> with the rule id). Claude can read the current rules with <code>list_guardrails</code>. Guardrails complement, not replace, the structural safeguards — read-only accounts and the Outbox stay as they are.</p>
 
-      <h2 id="connect">5. Connecting Claude</h2>
+      <h2 id="connect">6. Connecting Claude</h2>
       <h3>Claude Code</h3>
       <ol>
         <li><b>Connect Claude → Create token</b>, name it after the machine. Copy the token — it is shown once.</li>
@@ -162,7 +176,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
       </ol>
       <p>Clients cache the tool list when they connect. After the server is updated, toggle the connector off and on (or start a new conversation) to see new tools. A good first prompt: <i>“What's in my inbox, and what's on my calendar this week?”</i></p>
 
-      <h2 id="safety">6. Safety &amp; privacy</h2>
+      <h2 id="safety">7. Safety &amp; privacy</h2>
       <ul>
         <li><b>Logged:</b> sign-ins and failures, token and connector changes, mailbox and calendar changes, Outbox decisions, and every tool call Claude makes — tool, account or calendar, folder/uid/recipients/subject or event title and time, outcome, duration. <b>Never logged:</b> message bodies, attachments, event notes, passwords, codes.</li>
         <li><b>Stored encrypted:</b> mail and calendar passwords. Your sign-in password and authenticator secret live in Cognito, never here. Tokens are stored only as hashes.</li>
@@ -171,7 +185,7 @@ export const docsPage = (nonce: string, signedIn?: { name: string; email: string
         <li><b>New phone:</b> Security → Set up / replace authenticator. Locked out: the operator resets your two-factor setup on the command line and Cognito asks for a new authenticator at the next sign-in.</li>
       </ul>
 
-      <h2 id="ops">7. Operations (command line)</h2>
+      <h2 id="ops">8. Operations (command line)</h2>
       <p>There is no administrator in the web app: everybody has the same rights over their own data and nothing else. The few things that must be done <em>to</em> a user happen on the command line, from the repository, with AWS credentials for the stage:</p>
       <p><code>cd sst &amp;&amp; npm run user -- &lt;command&gt; [email] --stage dev</code></p>
       <ul>

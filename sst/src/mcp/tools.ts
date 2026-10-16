@@ -1,5 +1,6 @@
 import { listAccounts, redact, resolveAccount, type Account } from "../lib/store.js";
 import * as mail from "../lib/mail.js";
+import * as notes from "../lib/notes.js";
 import { beautify } from "../lib/beautify.js";
 import { queueSend, listPending } from "../lib/outbox.js";
 import { getReplies, listReplies, noteReply, REPLY_RETENTION_DAYS, type Reply } from "../lib/replies.js";
@@ -629,6 +630,84 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", properties: {} },
     mutating: false,
     handler: async (_a, ctx) => (await listGuardrails(ctx.userId)).filter((r) => r.enabled).map(({ id, text, tools, mode }) => ({ id, text, appliesTo: tools.length ? tools : "all tools", mode })),
+  },
+  /* ----------------------------------- notes ----------------------------------- */
+  {
+    name: "list_notes",
+    title: "List Apple Notes",
+    description:
+      "List the Apple Notes kept in the user's mail accounts (the account's Notes folder — notes the user stores \"On My <account>\" with Notes switched on for that mail account), newest first, with title, dates, a short preview and a `link`. Without `account` it looks in EVERY account and says which ones have no Notes folder. iCloud notes are not reachable here: Apple offers no server access to them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { ...account, description: "Only this account (label, email address or id). Omit to search all accounts." },
+        query: { type: "string", description: "Text to look for in the note's title or text." },
+        limit: { type: "number", description: "Max notes per account, default 20, max 100." },
+      },
+    },
+    mutating: false,
+    handler: async (a, ctx) => {
+      const accts = a.account ? [await resolveAccount(a.account, ctx.userId)] : await listAccounts(ctx.userId);
+      const args = { query: a.query, limit: typeof a.limit === "number" ? a.limit : undefined };
+      const settled = await Promise.allSettled(accts.map((x) => notes.listNotes(x, args)));
+      const found: unknown[] = [];
+      const noNotesFolder: string[] = [];
+      const errors: { account: string; error: string }[] = [];
+      settled.forEach((r, i) => {
+        const acct = accts[i];
+        if (r.status === "fulfilled") {
+          for (const n of r.value.notes) found.push(withLink(ctx.origin, acct.accountId, { account: acct.label, ...n }));
+        } else if (r.reason instanceof notes.NoNotesFolderError) noNotesFolder.push(acct.label);
+        else errors.push({ account: acct.label, error: r.reason instanceof Error ? r.reason.message : String(r.reason) });
+      });
+      // A single named account without Notes is an error the user should see as such.
+      if (a.account && noNotesFolder.length) throw new notes.NoNotesFolderError(accts[0]);
+      return {
+        notes: found,
+        ...(noNotesFolder.length ? { noNotesFolder, hint: notes.NOTES_HINT } : {}),
+        ...(errors.length ? { errors } : {}),
+      };
+    },
+  },
+  {
+    name: "get_note",
+    title: "Read an Apple Note",
+    description: "Read one note from an account's Notes folder in full, by the uid list_notes returned. Reading never changes the note.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        uid: { type: "number", description: "The note's uid from list_notes." },
+        folder: { type: "string", description: "The note's folder from list_notes. Detected if omitted." },
+      },
+      required: ["account", "uid"],
+    },
+    mutating: false,
+    handler: async (a, ctx) => {
+      const acct = await resolveAccount(a.account, ctx.userId);
+      return withLink(ctx.origin, acct.accountId, { account: acct.label, ...(await notes.getNote(acct, a.uid, a.folder)) });
+    },
+  },
+  {
+    name: "create_note",
+    title: "Create an Apple Note",
+    description:
+      "Add a new note to an account's Notes folder; it appears in the Notes app on every device where Notes is switched on for that account. Notes can only be added here — never edited or deleted. Write the body as plain text: one line per paragraph, \"- \" for bullets, \"1. \" for numbered lists, \"## \" for a bold heading line.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account,
+        title: { type: "string", description: "The note's title (its first line in the Notes app)." },
+        body: { type: "string", description: "The note's text, below the title." },
+        folder: { type: "string", description: "Override the Notes folder if auto-detection picks the wrong one." },
+      },
+      required: ["account", "title"],
+    },
+    mutating: true,
+    handler: async (a, ctx) => {
+      const acct = await writable(a.account, ctx, "creating a note");
+      return { account: acct.label, ...(await notes.createNote(acct, { title: a.title, body: a.body, folder: a.folder })) };
+    },
   },
   /* --------------------------------- calendars --------------------------------- */
   {

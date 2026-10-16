@@ -35,6 +35,23 @@ mock.module("../lib/mail.js", {
     MAX_TOTAL_ATTACHMENT_BYTES: 1024,
   },
 });
+class NoNotesFolderError extends Error {}
+const noteArgs: any[] = [];
+mock.module("../lib/notes.js", {
+  namedExports: {
+    NoNotesFolderError,
+    NOTES_HINT: "Switch on Notes",
+    // rw has notes, ro has no Notes folder, roa's server fails.
+    listNotes: async (a: any, args: any) => {
+      calls.push("listNotes"); noteArgs.push(args);
+      if (a.accountId === "ro") throw new NoNotesFolderError(`Account "${a.label}" has no Notes folder.`);
+      if (a.accountId === "roa") throw new Error("IMAP error at host: boom");
+      return { folder: "Notes", notes: [{ uid: 3, folder: "Notes", title: "Groceries", preview: "milk" }] };
+    },
+    getNote: async (_a: any, uid: number, folder?: string) => { calls.push("getNote"); return { uid, folder: folder ?? "Notes", title: "t", text: "x" }; },
+    createNote: stub("createNote"),
+  },
+});
 let approval = false;
 mock.module("../lib/settings.js", { namedExports: { requireApproval: async () => approval } });
 
@@ -95,8 +112,9 @@ const MUTATING: Record<string, any> = {
   move_message: { uid: 1, target: "X" },
   create_folder: { path: "X" },
   delete_folder: { path: "X", confirm: true },
+  create_note: { title: "Idea" },
 };
-const READ: Record<string, any> = { list_folders: {}, search_messages: {}, get_message: { uid: 1 }, get_attachment: { uid: 1 }, list_flags: {} };
+const READ: Record<string, any> = { list_folders: {}, search_messages: {}, get_message: { uid: 1 }, get_attachment: { uid: 1 }, list_flags: {}, get_note: { uid: 3 } };
 const CAL_MUTATING: Record<string, any> = {
   create_event: { summary: "x", start: "2026-09-14T10:00" },
   update_event: { uid: "u", summary: "y" },
@@ -107,7 +125,7 @@ const CAL_READ: Record<string, any> = { list_events: {}, get_event: { uid: "u" }
 test("every tool declares mutating and matches the expected sets", () => {
   for (const t of tools) assert.equal(typeof t.mutating, "boolean", t.name);
   assert.deepEqual(tools.filter((t) => t.mutating).map((t) => t.name).sort(), [...Object.keys(MUTATING), ...Object.keys(CAL_MUTATING)].sort());
-  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails", "list_replies"].sort());
+  assert.deepEqual(tools.filter((t) => !t.mutating).map((t) => t.name).sort(), [...Object.keys(READ), ...Object.keys(CAL_READ), "list_accounts", "list_calendars", "list_guardrails", "list_replies", "list_notes"].sort());
 });
 
 test("mutating tools are refused on a read-only account before touching mail", async () => {
@@ -268,4 +286,23 @@ test("a direct send logs the reply; a queued one carries inReplyTo to the Outbox
   } finally {
     approval = false;
   }
+});
+
+test("list_notes without an account looks in every account and says which have no Notes folder", async () => {
+  noteArgs.length = 0;
+  const res = (await toolMap.get("list_notes")!.handler({ query: "milk", limit: 5 }, { ...ctx, origin: "https://app.test" })) as any;
+  assert.deepEqual(res.notes.map((n: any) => [n.account, n.uid, n.title]), [["Open", 3, "Groceries"]]);
+  assert.equal(res.notes[0].link, "https://app.test/mail/rw/Notes/3");
+  assert.deepEqual(res.noNotesFolder, ["Locked"]);
+  assert.equal(res.hint, "Switch on Notes");
+  assert.deepEqual(res.errors, [{ account: "Locked but archivable", error: "IMAP error at host: boom" }]);
+  assert.deepEqual(noteArgs, [{ query: "milk", limit: 5 }, { query: "milk", limit: 5 }, { query: "milk", limit: 5 }]);
+  const other = (await toolMap.get("list_notes")!.handler({}, { ...ctx, userId: "u2" })) as any;
+  assert.deepEqual(other, { notes: [] });
+});
+
+test("list_notes on one named account without a Notes folder is an error, not an empty list", async () => {
+  await assert.rejects(toolMap.get("list_notes")!.handler({ account: "ro" }, ctx), NoNotesFolderError);
+  const res = (await toolMap.get("list_notes")!.handler({ account: "rw" }, ctx)) as any;
+  assert.deepEqual([res.notes.length, res.noNotesFolder, res.errors], [1, undefined, undefined]);
 });

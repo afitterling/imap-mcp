@@ -111,7 +111,7 @@ export const appPage = (nonce: string, user: PublicUser, mcpUrl: string) =>
       <div class="row">
         <select id="actKind" class="grow"><option value="">All kinds</option>
           <option value="auth">Sign-in</option><option value="mfa">Two-factor</option><option value="oauth">Connected apps</option>
-          <option value="token">Tokens</option><option value="mcp">Claude mail tools</option><option value="calendar">Calendars &amp; calendar tools</option><option value="account">Mail accounts</option>
+          <option value="token">Tokens</option><option value="mcp">Claude mail tools</option><option value="calendar">Calendars &amp; calendar tools</option><option value="notes">Notes tools</option><option value="account">Mail accounts</option>
           <option value="outbox">Outbox</option><option value="security">Security</option><option value="user">Users</option></select>
         <input type="date" id="actFrom" class="grow"><input type="date" id="actTo" class="grow">
         <button id="actLoad">Filter</button><a class="btn" id="actCsv" href="/api/activity.csv">Export CSV</a>

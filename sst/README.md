@@ -7,7 +7,7 @@ user's own IMAP/SMTP mailboxes and manage their calendars (iCloud/CalDAV read-wr
 ICS feeds read-only) — with every send held for human approval, optional read-only
 accounts and calendars, mandatory two-factor sign-in and a built-in audit trail.
 
-The user manual (Apple Mail, Apple Calendar, connecting Claude) is served at `/docs`.
+The user manual (Apple Mail, Apple Calendar, Apple Notes, connecting Claude) is served at `/docs`.
 
 > **Branch `upgrade`: not deployed yet.** See "Deploying this branch" below before running
 > `sst deploy`.
@@ -38,6 +38,7 @@ Browser ──session cookie──> /app,/admin ┘                 ├─ Accou
 | `src/routes/oauth.ts` | OAuth 2.1 for MCP clients: registration, consent via Cognito, PKCE codes, tokens |
 | `src/routes/mcp.ts` | Resolves the bearer token to a user and hands off to the RPC layer |
 | `src/mcp/` | JSON-RPC over Streamable HTTP (stateless), tool definitions, read-only gate |
+| `src/lib/notes.ts` | Apple Notes in a mail account's `Notes` IMAP folder: folder detection, list/read, compose and APPEND new notes |
 | `src/lib/calendar.ts`, `calstore.ts`, `tz.ts` | CalDAV via tsdav + ical.js: discovery, time-range reads with recurrence expansion, create/update/delete with etag checks; ICS fetch with SSRF guard; VTIMEZONE synthesis without a tz database |
 | `src/lib/` | mail (imapflow/nodemailer), users (profile mirror), sessions, tokens, oauth, store, outbox, settings, audit, ratelimit, notify, crypto |
 | `src/web/` | `layout.ts` (design system, nonce'd CSS/JS) and one file per page |
@@ -131,6 +132,22 @@ tool description tells the model to get the user's go-ahead first, and the audit
 records the attendee count. Sources: iCloud (`https://caldav.icloud.com`, app-specific
 password), Fastmail, Google, any CalDAV, and `webcal://`/`https://` ICS feeds (public,
 https-only, private networks refused, 5 MB cap).
+
+### Notes tools
+
+Apple Notes kept in a mail account ("On My <account>", Notes switched on for that account) are
+messages in the account's `Notes` IMAP folder, tagged `X-Uniform-Type-Identifier:
+com.apple.mail-note` (`src/lib/notes.ts`). iCloud notes sync through CloudKit and are not
+reachable from the server.
+
+| Tool | Does | Read-only account |
+|---|---|---|
+| `list_notes` | Notes newest first with title, dates, preview and `link`; no `account` = every account, reporting `noNotesFolder` | ✓ |
+| `get_note` | One note's full text and HTML, folder opened read-only | ✓ |
+| `create_note` | APPEND a new note (Apple headers, Notes-style HTML, `\Seen`); no edit or delete | refused |
+
+The Notes folder is the one whose last path segment is `Notes` (`Notes`, `[Gmail]/Notes`,
+`INBOX.Notes`). Audit rows use kind `notes` and never carry the title or text.
 
 ## Guardrails
 

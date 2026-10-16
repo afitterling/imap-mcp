@@ -1,20 +1,20 @@
 # WebMail / Private Office MCP
 
-An MCP server that gives Claude a private office: your own IMAP/SMTP mailboxes and your
-iCloud/CalDAV calendars, per user, with every outgoing mail held for your approval, a
-read-only switch on any account or calendar, mandatory two-factor sign-in through Amazon
-Cognito, and a built-in audit trail.
+An MCP server that gives Claude a private office: your own IMAP/SMTP mailboxes, your
+iCloud/CalDAV calendars and the Apple Notes kept in your mail accounts, per user, with every
+outgoing mail held for your approval, a read-only switch on any account or calendar,
+mandatory two-factor sign-in through Amazon Cognito, and a built-in audit trail.
 
 Runs as one AWS Lambda behind a Function URL, defined and deployed with SST. The server
 code, infrastructure and full documentation live in [`sst/`](sst/README.md).
 
 ## What Claude can do
 
-| Mail | Calendar |
-|---|---|
-| list folders, search, read messages, download attachments | list calendars, list/search events (recurrences expanded), read an event |
-| save drafts, queue mail for your approval (Outbox) | create, update, delete events; recurrence rules, reminders, attendees |
-| archive, move, flag, create/delete folders | ICS/webcal subscriptions (read-only) |
+| Mail | Calendar | Notes |
+|---|---|---|
+| list folders, search, read messages, download attachments | list calendars, list/search events (recurrences expanded), read an event | list, search and read Apple Notes kept in a mail account |
+| save drafts, queue mail for your approval (Outbox) | create, update, delete events; recurrence rules, reminders, attendees | add new notes (no edit or delete) |
+| archive, move, flag, create/delete folders | ICS/webcal subscriptions (read-only) | iCloud notes are not reachable (no Apple server API) |
 
 Anything marked **read-only** in the app is refused before the network is touched. Nothing is
 ever sent without a human click in the Outbox (unless you switch that off per user).
